@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Hexo 写作台</title>
+<!-- 设计系统：令牌 + 组件（样式全部走 CSS 变量，支持浅色纸感 / 暖夜双主题） -->
+<link rel="stylesheet" href="/styles.css">
+<!-- 主题引导必须在 head 里同步跑，否则首帧会闪一下浅色。
+     服务端 CSP 是 script-src 'self'，不允许内联脚本，所以单独一个文件。 -->
+<script src="/theme.js"></script>
+</head>
+<body>
+
+<h1 class="sr-only">Hexo 写作台 —— 本地可视化写作与发布工具</h1>
+
+<div class="app">
+
+  <!-- ⓿ 顶栏：品牌、博客路径、部署目标、全局工具 -->
+  <header class="appbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24"><path d="M20 4c-7-1-13 2-13 8a5 5 0 0 0 5 5c6 0 9-6 8-13Z"/><path d="m4 20 11-11M8 16v-5m0 5h5"/></svg></span>
+      <div class="brand-copy"><b>Hexo <span>写作台</span></b><small>给灵感一个安静的角落</small></div>
+    </div>
+    <div class="meta">
+      <span class="path" id="blogPath" title="当前博客目录"></span>
+      <span class="deploy" id="deployInfo" title="部署目标（读自 _config.yml）"></span>
+    </div>
+    <div class="tools">
+      <span class="badge" id="status">空闲</span>
+      <a id="serveLink" class="serve-link" target="_blank" rel="noreferrer" hidden></a>
+      <button id="btnTrash" class="ghost icon" aria-label="回收站" title="回收站：删除的文章在这里，可恢复"><svg class="ui-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6m4-6v6"/></svg><span id="trashCount"></span></button>
+      <button id="btnTheme" class="ghost icon" aria-label="切换浅色或深色主题" title="切换浅色 / 深色">◐</button>
+      <button id="btnSettings" class="ghost icon" aria-label="设置" title="设置：博客目录与端口"><svg class="ui-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16M8 4v6m8 4v6"/></svg></button>
+      <button id="btnShutdown" class="danger sm" title="退出写作台服务，本地预览也会一起停">关闭服务</button>
+    </div>
+  </header>
+
+  <!-- ① 文章列表 -->
+  <aside class="panel panel--list">
+    <header>
+      <h2>文章库</h2>
+      <span class="badge" id="listCount">0</span>
+      <div class="spacer"></div>
+      <button class="primary sm" id="btnNew">＋ 新文章</button>
+    </header>
+    <div class="filterbar">
+      <button class="fbtn active" data-view="all">全部 <span class="n" id="cntAll">0</span></button>
+      <button class="fbtn" data-view="pub">已发布 <span class="n" id="cntPub">0</span></button>
+      <button class="fbtn" data-view="draft">草稿 <span class="n" id="cntDraft">0</span></button>
+    </div>
+    <div class="note" id="draftNote"></div>
+    <div class="meta-search">
+      <input id="search" type="search" aria-label="搜索文章" placeholder="搜索文章、正文…" autocomplete="off">
+      <div class="bulkbar">
+        <label class="chk"><input type="checkbox" id="selAll">全选</label>
+        <button id="btnDelSel" class="sm" disabled>删除选中</button>
+      </div>
+    </div>
+    <div class="scroll"><ul id="postlist"></ul></div>
+    <div class="sidebar-foot"><span class="local-dot" aria-hidden="true"></span><span>本地写作，安心记录</span></div>
+  </aside>
+
+  <!-- ② 编辑区 -->
+  <section class="panel panel--editor">
+    <div class="loading-bar" id="editLoading"></div>
+    <header>
+      <span class="title-strong" id="editorTitle">新建文章</span>
+      <div class="spacer"></div>
+      <span class="badge" id="wordCount">0 字</span>
+    </header>
+
+    <div class="editor-workspace">
+    <div class="article-settings">
+    <div class="article-heading">
+      <label for="f-title">文章标题 <span aria-hidden="true">*</span></label>
+      <input id="f-title" placeholder="为这篇文章起一个名字…" autocomplete="off">
+    </div>
+    <details class="fields" open>
+      <summary>文章属性 <span id="fieldsSummary"></span><span class="fields-hint">展开设置</span></summary>
+      <div class="fields-grid">
+        <div><label for="f-name">文件名（留空=用标题）</label><input id="f-name" placeholder="自动"></div>
+        <div><label for="f-date">日期</label><input id="f-date" placeholder="YYYY-MM-DD HH:mm:ss"></div>
+        <div><label for="f-categories">分类 categories</label><select id="f-categories"><option value="">未选择</option><option value="tech_article">tech_article</option><option value="life_article">life_article</option></select></div>
+        <div><label for="f-tags">标签 tags（可选或输入）</label><div class="tags-picker"><input id="f-tags" role="combobox" aria-expanded="false" aria-controls="tagSuggestions" aria-autocomplete="list" placeholder="选择或输入，逗号分隔" title="从已发布文章的标签中选择，也可输入新标签；多个标签用逗号分隔" autocomplete="off"><button id="btnTags" class="tags-toggle" type="button" aria-label="选择已有标签">⌄</button><div id="tagSuggestions" class="tags-options" role="listbox" aria-label="已发布文章的标签" hidden></div></div></div>
+        <div class="chk"><input type="checkbox" id="f-mathjax"><label for="f-mathjax">启用 MathJax</label></div>
+        <div class="chk"><input type="checkbox" id="f-draft"><label for="f-draft">存为草稿</label></div>
+      </div>
+    </details>
+    </div>
+
+    <div class="article-writing">
+    <div class="steps">
+      <button id="btnPdf" class="ghost sm" title="选一个 PDF，直接转成 Markdown 开成一篇新文章（不用手动复制粘贴）">导入 PDF</button>
+      <button id="btnUpload" class="ghost icon sm" aria-label="插入图片" title="插入图片：选择图片，也可以直接 Ctrl+V 粘贴或拖拽进来"><svg class="ui-icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/></svg></button>
+      <button id="btnPublish" class="ghost sm" hidden>发表文章</button>
+      <button id="btnHistory" class="ghost icon sm" aria-label="历史版本" title="历史版本：查看这篇文章的历次保存版本"><svg class="ui-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 11a9 9 0 1 1 2 7M3 4v7h7m2-4v5l3 2"/></svg></button>
+      <button id="btnAssets" class="ghost icon sm" aria-label="图片管理" title="图片管理：查看、删除、恢复这篇文章的图片"><svg class="ui-icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></button>
+      <button id="btnOpenTab" class="ghost icon sm" aria-label="新页面编辑" title="在浏览器新标签页里专注编辑这篇文章，不显示文章列表和编译窗口"><svg class="ui-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M14 3h7v7m0-7L11 13M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg></button>
+      <div class="spacer"></div>
+      <button class="sm" id="btnPreview" title="在新标签页中实时预览，包括尚未保存的修改">↗ 实时预览</button>
+      <button class="sm" id="btnCompilePost" title="保存这篇文章并生成静态页面，完成后给出它的访问地址">编译本文</button>
+      <button class="primary" id="btnSave" title="Ctrl+S">保存 <kbd>Ctrl S</kbd></button>
+    </div>
+
+    <div class="writing-caption"><span>MARKDOWN</span><span>从第一句话开始。</span></div>
+    <textarea id="body" aria-label="Markdown 正文" spellcheck="false" placeholder="记录此刻的想法…&#10;&#10;支持 Markdown，图片可以直接粘贴或拖入。"></textarea>
+    </div>
+    </div>
+  </section>
+
+  <!-- ④ 编译窗口：默认高度比普通控制台高，上沿可拖，还能一键放大到整屏 -->
+  <section class="panel panel--console" id="consolePanel">
+    <div class="grip" id="consoleGrip" role="separator" aria-orientation="horizontal"
+         aria-label="拖动调整编译窗口高度" tabindex="0"></div>
+    <header>
+      <h2>构建与发布</h2>
+      <span class="badge" id="jobTitle"></span>
+      <div class="spacer"></div>
+      <button class="primary sm" id="btnBuild" title="保存当前文章并生成静态页面（hexo clean &amp;&amp; hexo generate）">编译站点</button>
+      <button class="sm" id="btnDeploy">一键发布</button>
+      <button id="btnServe" class="sm" title="启动 hexo server（含草稿），在浏览器里看真实渲染效果">本地预览</button>
+      <button id="btnClean" class="ghost sm">清缓存</button>
+      <button id="btnStop" class="ghost sm" disabled>中止</button>
+      <button id="btnLogClear" class="ghost icon" aria-label="清空日志" title="清空日志">⌫</button>
+      <button id="btnConsoleMax" class="ghost icon" aria-label="放大或还原编译窗口" title="放大编译窗口（Esc 还原）" aria-pressed="false">⤢</button>
+    </header>
+    <div class="buildbar" id="buildBar" hidden>
+      <span id="buildStat"></span>
+      <span class="spacer"></span>
+      <a id="postOutLink" class="outlink" target="_blank" rel="noreferrer" hidden></a>
+      <button class="sm" id="btnEditTab" title="刚编译的就是这篇：在新标签页里单独编辑它">↗ 新页面编辑</button>
+    </div>
+    <div id="log" class="scroll log"></div>
+  </section>
+</div>
+
+<!-- ⑤ 回收站 -->
+<div class="modal" id="trashModal" role="dialog" aria-modal="true" aria-labelledby="trashTitle">
+  <div class="box">
+    <header>
+      <h2 id="trashTitle">回收站</h2>
+      <span class="badge" id="trashHint"></span>
+      <div class="spacer"></div>
+      <button id="btnEmptyTrash" class="ghost sm">清空回收站</button>
+      <button id="btnCloseTrash" class="sm">关闭</button>
+    </header>
+    <div class="body"><div class="tlist" id="trashList"></div></div>
+  </div>
+</div>
+
+<!-- ⑥ 历史版本 -->
+<div class="modal" id="histModal" role="dialog" aria-modal="true" aria-labelledby="histTitle">
+  <div class="box">
+    <header>
+      <h2 id="histTitle">历史版本</h2>
+      <span class="badge" id="histHint"></span>
+      <div class="spacer"></div>
+      <button id="btnCloseHist" class="sm">关闭</button>
+    </header>
+    <div class="body">
+      <div class="tlist" id="histList"></div>
+      <pre id="histPreview" class="preview" style="margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);white-space:pre-wrap;font-family:var(--font-mono);font-size:12px;line-height:1.7;max-height:32vh;overflow:auto"></pre>
+    </div>
+    <div class="foot">
+      <button id="btnHistLoad" disabled>载入到编辑器</button>
+    </div>
+  </div>
+</div>
+
+<!-- ⑦ 图片管理 -->
+<div class="modal" id="assetsModal" role="dialog" aria-modal="true" aria-labelledby="assetsTitle">
+  <div class="box">
+    <header>
+      <h2 id="assetsTitle">文章图片</h2>
+      <span class="badge" id="assetsHint"></span>
+      <div class="spacer"></div>
+      <button id="btnCloseAssets" class="sm">关闭</button>
+    </header>
+    <div class="body">
+      <div class="grid-cards" id="assetsList"></div>
+      <h3 id="archivedTitle" style="font-size:13px;color:var(--text-3);margin:20px 0 8px" hidden>已删除的图片</h3>
+      <div class="grid-cards" id="assetsArchived"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ⑧ 设置 -->
+<div class="modal" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+  <div class="box" style="width:min(820px,94vw)">
+    <header>
+      <h2 id="settingsTitle">设置</h2>
+      <div class="spacer"></div>
+      <button id="btnCloseSettings" class="sm">关闭</button>
+    </header>
+    <div class="body">
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div><label for="s-blog" style="display:block;font-size:var(--fs-xs);color:var(--text-3);margin-bottom:3px">博客目录（必须含 _config.yml 与 source/_posts）</label><input id="s-blog" placeholder="D:\myblog"></div>
+        <div><label for="s-preview" style="display:block;font-size:var(--fs-xs);color:var(--text-3);margin-bottom:3px">本地预览端口</label><input id="s-preview" placeholder="4000"></div>
+        <div><label for="s-tool" style="display:block;font-size:var(--fs-xs);color:var(--text-3);margin-bottom:3px">写作台端口（改动后需要重启）</label><input id="s-tool" placeholder="4321"></div>
+        <div class="note" id="settingsNote" style="padding:0"></div>
+      </div>
+      <details class="config-editor" id="configEditor" hidden>
+        <summary>博客配置文件（YAML）</summary>
+        <div class="config-toolbar">
+          <label for="s-config-file">配置文件</label>
+          <select id="s-config-file" aria-label="选择博客配置文件"></select>
+          <button id="btnReloadConfig" class="sm">重新读取</button>
+          <button id="btnSaveConfig" class="primary sm">保存配置文件</button>
+        </div>
+        <div class="note" id="configNote" role="status"></div>
+        <textarea id="s-config-content" aria-label="YAML 配置内容" spellcheck="false" wrap="off"></textarea>
+      </details>
+    </div>
+    <div class="foot">
+      <button id="btnSaveSettings" class="primary">保存设置</button>
+    </div>
+  </div>
+</div>
+
+<!-- ⑨ 列表右键菜单 + 提示条 -->
+<div class="ctxmenu" id="ctxmenu"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<!-- 依赖顺序：编辑器模块 → 应用外壳。Markdown 渲染库仅在预览标签页加载。
+     全部外链，因为 CSP 只允许 script-src 'self'。 -->
+<script src="/editor.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

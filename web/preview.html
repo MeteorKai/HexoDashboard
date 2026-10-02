@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>实时预览 · Hexo 写作台</title>
+<link rel="stylesheet" href="/styles.css">
+<script src="/theme.js"></script>
+</head>
+<body class="preview-page">
+<header class="preview-bar">
+  <div><span class="badge accent">实时预览</span><span class="preview-live" aria-hidden="true"></span></div>
+  <span id="previewStatus" role="status">请从编辑页点击「实时预览」打开此页面。</span>
+  <button class="ghost sm" id="btnClosePreview">关闭预览</button>
+</header>
+<main class="preview-document">
+  <h1 id="previewTitle">文章预览</h1>
+  <p class="note warn" id="previewWarn" role="status"></p>
+  <article class="preview" id="preview" aria-label="文章实时预览"></article>
+</main>
+<script src="/marked.js"></script>
+<script src="/purify.js"></script>
+<script src="/editor.js"></script>
+<script src="/preview.js"></script>
+</body>
+</html>

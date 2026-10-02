@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<!-- 标题由 post.js 按文章名改写，这里只是首帧的兜底 -->
+<title>编辑中 · Hexo 写作台</title>
+<!-- 与主页面共用同一套设计与主题引导，页面之间不会有观感断层 -->
+<link rel="stylesheet" href="/styles.css">
+<script src="/theme.js"></script>
+</head>
+<body>
+
+<h1 class="sr-only">单篇文章编辑页 —— 只做这一篇文章的编辑与编译</h1>
+
+<div class="postpage" id="postpage">
+
+  <!-- ⓪ 顶栏：回写作台 / 标题 / 状态 / 保存 / 编译 -->
+  <header class="ppbar">
+    <a class="ppback" href="/" title="回到写作台：文章列表、编译窗口、发布">← 写作台</a>
+    <span class="badge" id="ppKind">载入中</span>
+    <input id="f-title" class="pptitle" type="text" placeholder="文章标题" autocomplete="off"
+           spellcheck="false" aria-label="文章标题">
+    <div class="spacer"></div>
+    <span class="badge" id="wordCount">0 字</span>
+    <span class="badge" id="ppState">载入中…</span>
+    <button class="sm" id="btnFields" aria-expanded="true" aria-controls="ppFields"
+            title="展开 / 收起文章的 front-matter 字段">▾ 属性</button>
+    <button class="ghost icon" id="btnTheme" aria-label="切换浅色或深色主题" title="切换浅色 / 深色">◐</button>
+    <button class="sm" id="btnCompile" title="先保存，再生成整个站点的静态页面（hexo clean &amp;&amp; hexo generate）">保存并编译</button>
+    <button class="primary sm" id="btnSave" title="保存（Ctrl+S）">保存</button>
+  </header>
+
+  <!-- ① 属性与正文各自占满工作区高度，预览按需打开新标签页 -->
+  <div class="editor-workspace">
+  <details class="ppfields" id="ppFields" open>
+    <summary>文章属性</summary>
+    <div class="fields-grid">
+      <div><label for="f-name">文件名（改它会重命名文章）</label><input id="f-name" placeholder="留空=用标题" autocomplete="off"></div>
+      <div><label for="f-date">日期</label><input id="f-date" placeholder="YYYY-MM-DD HH:mm:ss" autocomplete="off"></div>
+      <div><label for="f-categories">分类 categories</label><select id="f-categories"><option value="">未选择</option><option value="tech_article">tech_article</option><option value="life_article">life_article</option></select></div>
+      <div><label for="f-tags">标签 tags（可选或输入）</label><div class="tags-picker"><input id="f-tags" role="combobox" aria-expanded="false" aria-controls="tagSuggestions" aria-autocomplete="list" placeholder="选择或输入，逗号分隔" title="从已发布文章的标签中选择，也可输入新标签；多个标签用逗号分隔" autocomplete="off"><button id="btnTags" class="tags-toggle" type="button" aria-label="选择已有标签">⌄</button><div id="tagSuggestions" class="tags-options" role="listbox" aria-label="已发布文章的标签" hidden></div></div></div>
+      <div class="chk"><input type="checkbox" id="f-mathjax"><label for="f-mathjax">启用 MathJax</label></div>
+      <div class="chk"><input type="checkbox" id="f-draft"><label for="f-draft">存为草稿（只留本地，不发布）</label></div>
+    </div>
+  </details>
+
+  <!-- ② 工具条 -->
+  <div class="article-writing">
+  <div class="pptools">
+    <button class="ghost sm" id="btnPdf" title="选一个 PDF，把转出来的 Markdown 插到光标处（不用手动复制粘贴）">导入 PDF</button>
+    <button class="ghost sm" id="btnUpload" title="选择图片，也可以直接 Ctrl+V 粘贴或拖拽进来">插入图片</button>
+    <span class="note">Ctrl+S 保存 · Tab 缩进 · 图片可粘贴或拖入</span>
+    <div class="spacer"></div>
+    <button class="sm" id="btnPreview" title="在新标签页中实时预览，包括尚未保存的修改">↗ 实时预览</button>
+  </div>
+
+  <!-- ③ 全宽正文编辑 -->
+    <textarea id="body" aria-label="Markdown 正文" spellcheck="false" placeholder="记录此刻的想法…&#10;&#10;支持 Markdown，图片可以直接粘贴或拖入。"></textarea>
+  </div>
+  </div>
+
+  <!-- ④ 底部状态条：保存 / 编译的进度与结果，平时隐藏 -->
+  <div class="ppstatus" id="ppStatus" role="status" aria-live="polite" hidden>
+    <span id="ppStatusText"></span>
+    <span class="spacer"></span>
+    <a id="ppOutLink" class="outlink" target="_blank" rel="noreferrer" hidden></a>
+  </div>
+</div>
+
+<!-- ⑤ 载入失败时的落地页：不装作"编辑器在这里"，直接说清楚为什么打不开 -->
+<div class="ppfail" id="ppFail" hidden>
+  <div class="box">
+    <h2 id="ppFailTitle">打不开这篇文章</h2>
+    <p id="ppFailMsg"></p>
+    <a class="ppback" href="/">← 回到写作台</a>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<!-- 依赖顺序与主页面一致：编辑器模块 → 本页外壳；渲染库在预览标签页加载。
+     CSP 是 script-src 'self'，全部外链，一个内联脚本都不能有。 -->
+<script src="/editor.js"></script>
+<script src="/post.js"></script>
+</body>
+</html>

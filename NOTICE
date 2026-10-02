@@ -1,0 +1,31 @@
+Hexo Tool / Hexo Writing Desk
+Copyright 2026 Hexo Tool contributors.
+
+Original project code is licensed under the Apache License, Version 2.0.
+Third-party components retain their respective licenses and copyright notices.
+
+This project includes:
+
+Marked
+https://github.com/markedjs/marked
+Copyright (c) 2018+, MarkedJS.
+Copyright (c) 2011-2018, Christopher Jeffrey.
+License: MIT; see vendor/marked-LICENSE.md and the library header.
+
+DOMPurify
+https://github.com/cure53/DOMPurify
+Copyright Cure53 and other contributors.
+The library declares Apache-2.0 / MPL-2.0 dual licensing.
+The bundled Apache-2.0 license is retained in vendor/dompurify-LICENSE.
+
+js-yaml
+https://github.com/nodeca/js-yaml
+Copyright (C) 2011-2015 by Vitaly Puzrin.
+License: MIT; see vendor/js-yaml-LICENSE.
+
+PDF.js
+https://github.com/mozilla/pdf.js
+Copyright 2023 Mozilla Foundation.
+License: Apache-2.0; see vendor/pdfjs/LICENSE and the source headers.
+
+This notice is informational and does not modify any license terms.

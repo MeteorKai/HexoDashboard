@@ -1,0 +1,15 @@
+# Local settings, logs and process state (created on startup).
+/data/
+
+# Optional portable runtime; install Node.js for a source checkout.
+/node/
+/node_modules/
+
+# Development screenshots, backups and test reports.
+/.workbuddy/
+/tests/*.out
+
+# OS metadata.
+.DS_Store
+Thumbs.db
+Desktop.ini
