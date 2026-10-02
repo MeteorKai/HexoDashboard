@@ -188,3 +188,7 @@ PDF 转换在本机完成，不上传到外部转换服务；复杂排版的还�
 | PDF.js | PDF 文字与版式提取 | `vendor/pdfjs/LICENSE`（Apache-2.0） |
 
 不要删除第三方许可证、PDF.js worker、CMap 或字体资源；它们不是多余文件。
+
+
+
+最后欢迎大家提出issue，我会积极优化修复。
