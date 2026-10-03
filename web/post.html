@@ -52,6 +52,7 @@
     <button class="ghost sm" id="btnPdf" title="选一个 PDF，把转出来的 Markdown 插到光标处（不用手动复制粘贴）">导入 PDF</button>
     <button class="ghost sm" id="btnUpload" title="选择图片，也可以直接 Ctrl+V 粘贴或拖拽进来">插入图片</button>
     <span class="note">Ctrl+S 保存 · Tab 缩进 · 图片可粘贴或拖入</span>
+    <button class="ghost sm" id="btnKeys" title="Markdown 快捷键速查（Ctrl /）">⌨ 快捷键</button>
     <div class="spacer"></div>
     <button class="sm" id="btnPreview" title="在新标签页中实时预览，包括尚未保存的修改">↗ 实时预览</button>
   </div>
@@ -78,10 +79,24 @@
   </div>
 </div>
 
+<!-- ⑥ 快捷键速查：和写作台共用 editor.js 里那段逻辑，节点 id 必须一致 -->
+<div class="modal" id="keysModal" role="dialog" aria-modal="true" aria-labelledby="keysTitle">
+  <div class="box" style="width:min(680px,94vw)">
+    <header>
+      <h2 id="keysTitle">Markdown 快捷键</h2>
+      <span class="badge">光标放一行里按即可，选中多行则整块生效</span>
+      <div class="spacer"></div>
+      <button id="btnCloseKeys" class="sm">关闭</button>
+    </header>
+    <div class="body"><div class="keys-grid" id="keysList"></div></div>
+  </div>
+</div>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<!-- 依赖顺序与主页面一致：编辑器模块 → 本页外壳；渲染库在预览标签页加载。
+<!-- 依赖顺序与主页面一致：快捷键表 → 编辑器模块 → 本页外壳；渲染库在预览标签页加载。
      CSP 是 script-src 'self'，全部外链，一个内联脚本都不能有。 -->
+<script src="/mdkeys.js"></script>
 <script src="/editor.js"></script>
 <script src="/post.js"></script>
 </body>

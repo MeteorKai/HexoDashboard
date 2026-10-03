@@ -596,6 +596,12 @@ body.resizing .log { pointer-events: none; }
 .config-editor textarea { width: 100%; height: 280px; min-height: 160px; resize: vertical; font: var(--fs-sm)/1.7 var(--font-mono); white-space: pre; }
 .modal .box .foot { display: flex; gap: var(--sp-2); justify-content: flex-end; padding: var(--sp-3) var(--sp-4); border-top: 1px solid var(--hairline); background: var(--surface-2); }
 
+/* 快捷键速查：两列自适应，键名等宽对齐，扫一眼就能找到要按的那颗键 */
+.keys-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px var(--sp-4); }
+.krow { display: flex; align-items: center; gap: var(--sp-3); padding: 5px 0; border-bottom: 1px solid var(--hairline); }
+.krow kbd { flex: 0 0 auto; min-width: 104px; text-align: center; font: var(--fs-xs)/1.7 var(--font-mono); color: var(--text-2); background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+.krow span { font-size: var(--fs-xs); color: var(--text-2); }
+
 .tlist { display: flex; flex-direction: column; gap: 6px; }
 .titem {
   display: flex; align-items: center; gap: var(--sp-3);

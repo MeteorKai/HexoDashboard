@@ -360,6 +360,39 @@ function tightenItem(it) {
   return (it.width - wide * size) / sp < SPACE_ARTIFACT * size ? t.replace(/ /g, '') : t;
 }
 
+/* ── 相邻图片的间距：不在这里做，交给主题 CSS ─────────────────────────────
+ *
+ * 【曾经的做法】以前这里会在两张相邻的 `{% asset_img %}` 之间插一个 `&nbsp;`，
+ * 靠"真的多出一个段落"骗出间距。现在**撤掉了**，原因见下 —— 代码留空是刻意的，
+ * 免得后来人看到"图贴在一起"又把这套加回来。
+ *
+ * 症状（真机实测，Chic 主题）：两张图中间没有文字时，发布后上下紧贴在一起，
+ * 看起来像一张；隔一段文字就正常。而写作台的实时预览里反而是分开的。
+ *
+ * 根因是"两边的垂直间距由谁负责"不同：
+ *   · 预览页是我们自己的 CSS：`.preview img { margin: var(--sp-2) 0 }`，有间距；
+ *   · 发布后是主题说了算 —— Chic 的 post_content.styl 写的是
+ *     `img { display block; margin 0 auto }`：`display:block` 只保证上下各占一行，
+ *     **垂直 margin 是 0**。而 `{% asset_img %}` 渲染出的是**裸 `<img>`**（外面没有
+ *     `<p>`，见线上 HTML），两张图之间只剩一个换行符，于是严丝合缝地贴住。
+ *
+ * 为什么不继续在正文里插 `&nbsp;`：
+ *   1. **只覆盖"修复之后导入的文章"**。用户手上这篇是修复之前导的，md 里一个
+ *      `&nbsp;` 都没有，于是"明明修过了为什么线上还是贴着"——症状离根因太远。
+ *   2. **污染正文**。`<p>&nbsp;</p>` 会出现在编辑区里，导出到别的平台（GitHub 等）
+ *      也是一段莫名其妙的空白段落。
+ *   3. **和 CSS 方案叠加会double**：同时用两套机制时，相邻两图的间距 =
+ *      图片外边距 + 一整行 `&nbsp;` 的行高 + 段落外边距，比"图和文字之间"的间距
+ *      大得多，同一个页面里两种间距反而更乱。
+ *
+ * 现在的做法：主题侧一条 CSS（`.post-content > img + img { margin-top: … }`），
+ * 新老文章一起生效，且只作用于"图贴着图"这一种情况，不打扰图片与正文之间原有的
+ * 间距。这条 CSS 写在 `themes/Chic/source/css/custom.styl`（主题官方留的用户钩子，
+ * 也是用户自己已经改过的那个文件）。
+ *
+ * 换主题怎么办：新主题若同样把图片垂直 margin 设成 0，把同一条规则加进新主题的
+ * 自定义 CSS 即可；判断方法是在线上页面里看两张相邻 `<img>` 之间有没有间距。 */
+
 /* ── 四、主流程 ───────────────────────────────────────────────────────── */
 function toMarkdown(pages, options) {
   const opt = Object.assign({ title: '', images: [] }, options || {});
@@ -376,7 +409,8 @@ function toMarkdown(pages, options) {
     .filter((im) => im && im.tag)
     .sort((a, b) => (a.page - b.page) || (a.yTop - b.yTop));
   if (!lines.length) {
-    /* 整份 PDF 没有可提取文字（扫描件）：图还是得出来，按顺序排在末尾。 */
+    /* 整份 PDF 没有可提取文字（扫描件）：图还是得出来，按顺序排在末尾。
+       间距由主题 CSS 负责（见上方"相邻图片的间距"那段说明），这里不再插 `&nbsp;`。 */
     for (const im of pending) stats.images++;
     const only = pending.map((im) => im.tag).join('\n\n');
     return { title: normalizeKangxi(opt.title || '')[0], markdown: only ? only + '\n' : '', stats };

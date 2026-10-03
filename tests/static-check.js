@@ -53,6 +53,7 @@ const phtml = fs.readFileSync(path.join(WEB, 'post.html'), 'utf8');
 const pjs = fs.readFileSync(path.join(WEB, 'post.js'), 'utf8');
 const pdfmdSrc = fs.readFileSync(path.join(SRC, 'pdfmd.js'), 'utf8');
 const pimpSrc = fs.readFileSync(path.join(SRC, 'pdfimport.js'), 'utf8');
+const keysSrc = fs.readFileSync(path.join(WEB, 'mdkeys.js'), 'utf8');
 
 /* STATIC 表：URL -> 真实文件。注意表里写的是**相对应用根**的路径
    （页面全在 web/，第三方在 vendor/），所以下面一律用 path.join(ROOT, ...) 解析。 */
@@ -158,8 +159,11 @@ const pUsed = new Set();
 for (const src of [pjs, ed]) for (const m of src.matchAll(/\$\('([A-Za-z0-9_-]+)'\)/g)) pUsed.add(m[1]);
 const pMissing = [...pUsed].filter((id) => !pIds.has(id));
 ok(pMissing.length === 0, `post.js / editor.js 引用的 ${pUsed.size} 个 id 在 post.html 里都存在`, pMissing.join(', '));
-const pUnused = [...pIds].filter((id) => !pUsed.has(id));
-ok(pUnused.length === 0, 'post.html 没有多余的 id', pUnused.join(', '));
+/* 和主页面那条保持一致：aria-labelledby 指向的标题也算"被用到"。
+   不给它开口子的话，任何带 aria-labelledby 的对话框都会误报成多余 id。 */
+const pLabelled = new Set([...phtml.matchAll(/aria-labelledby="([^"]+)"/g)].map((m) => m[1]));
+const pUnused = [...pIds].filter((id) => !pUsed.has(id) && !pLabelled.has(id));
+ok(pUnused.length === 0, 'post.html 没有多余的 id（除 aria-labelledby 目标）', pUnused.join(', '));
 
 /* editor.js 两个页面共用：这 5 个节点少一个，独立页的编辑器就是一块打不开的空白 */
 const edNeeds = [...new Set([...ed.matchAll(/\$\('([A-Za-z0-9_-]+)'\)/g)].map((m) => m[1]))];
@@ -308,6 +312,134 @@ for (const m of previewHtml.matchAll(/(?:src|href)="(\/[^"]+)"/g)) {
 ok(!/<script(?![^>]*\bsrc=)[^>]*>/.test(previewHtml) && !/\son[a-z]+=/.test(previewHtml), '预览页面符合 CSP');
 ok(/e\.origin !== location\.origin/.test(previewJs) && /e\.source !== window\.opener/.test(previewJs), '预览只接收同源打开者的消息');
 ok(/Editor\.renderPreview/.test(previewJs) && /sanitize\(html\)/.test(ed), '新标签页复用 Markdown 清洗与资源路径解析');
+
+log('');
+log('== 12b. 围栏配对 / 相邻图片间距 / 部署残留锁 ==');
+/* 这三条都是用户在真机上撞出来的，共同点是"症状离根因很远"，只有钉住关键那几行
+   才能保证不被后来的重构改回去。 */
+
+/* ① 围栏配对必须看**类型**，不能只看"是不是围栏行"。
+   老写法 `fence = fence ? null : f[1]` 会把 ` ``` ` 开、`~~~` 闭当成合法闭合，
+   而 marked 不认 —— 两边的"在不在代码块里"就此错开。 */
+ok(/fence\s*=\s*\{\s*ch:\s*marker\[0\],\s*len:\s*marker\.length\s*\}/.test(ed),
+  'expandAssetTags 按"类型 + 长度"配对围栏（和 CommonMark 一致）');
+ok(/marker\[0\]\s*===\s*fence\.ch\s*&&\s*marker\.length\s*>=\s*fence\.len/.test(ed),
+  '闭合围栏必须与开启同类型且不短于它');
+/* 断言"某个坏写法不在"时必须先剥掉注释 —— 注释里往往会引用那段坏代码来
+   解释它是怎么坏的，直接扫全文就会命中注释，断言永远为假。这一条自己先踩了一次。 */
+const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const edCode = stripComments(ed);
+const pdfmdCode = stripComments(pdfmdSrc);
+ok(!/fence\s*=\s*fence\s*\?\s*null\s*:\s*f\[1\]/.test(edCode),
+  '老的"只看是不是围栏行"的写法已经不在（它就是合并两个代码块的元凶）');
+/* ② 闭不上的代码块要自愈 —— 否则 marked 会把两个块吃成一个。 */
+ok(/function normalizeFences/.test(ed) && /normalizeFences\(src\)/.test(ed),
+  '有 normalizeFences，且真的接在渲染链上（它负责修好闭不上的围栏）');
+ok(/expandAssetTags\(normalizeFences\(src\)\)/.test(ed),
+  '先规整围栏、再展开 asset_img（顺序反了两处判断会错开一行）');
+ok(/if\s*\(!open\)\s*return String\(src\)/.test(ed),
+  '全部配对成功的 md 一个字都不动（否则会毁掉 `~~~` / ` ``` ` 各自成块的合法写法）');
+ok(/Editor\.normalizeFences|normalizeFences,/.test(ed), 'normalizeFences 导出给测试用');
+
+/* ③ 相邻图片的间距**归主题 CSS**，正文里不许再塞东西。
+   以前在 markdown 里插过 `&nbsp;`，撤掉了 —— 它只覆盖"修复之后导入的文章"
+   （用户手上那篇是修复前导的，于是"明明修过了为什么线上还是贴着"，症状离根因太远），
+   而且和 CSS 方案叠加会出现双倍间距。钉住"不再插"，防止后来人又加回来。
+   根因本身是：主题 CSS `img { display block; margin 0 auto }` 垂直间距为 0，
+   而 asset_img 渲染出的是裸 `<img>`（外面没有 `<p>`），两张图之间只剩一个换行。 */
+ok(!/spaceOutAdjacentImages/.test(pdfmdCode) && !/&nbsp;/.test(pdfmdCode),
+  'pdfmd 不再往正文里插 &nbsp; 空段落（间距交给主题 CSS）');
+ok(/相邻图片的间距/.test(pdfmdSrc) && /主题 CSS/.test(pdfmdSrc),
+  'pdfmd 里写清了"间距归主题 CSS"的来龙去脉（否则后来人一定会再加回来）');
+ok(!/<div style="height:/.test(pdfmdCode),
+  '没有把内联样式写进正文（那样用户想调间距还得改文章）');
+
+/* ④ 中止部署后要清 git 残留锁，且前提是"没有活着的 git"。 */
+ok(/function clearGitLocks/.test(srv) && /function gitRunning/.test(srv),
+  'server.js 有清锁与"查有没有 git 在跑"两个函数');
+ok(/await gitRunning\(\)[\s\S]{0,80}return \[\]/.test(srv),
+  '有 git 进程在跑时**不清锁**（那是真锁，抽掉会写坏索引）');
+ok(/GIT_LOCK_DIRS[\s\S]{0,200}\.deploy_git/.test(srv),
+  '锁目录指向 .deploy_git（hexo-deployer-git 的工作仓库，锁就在它里面）');
+ok(/index\.lock/.test(srv) && /packed-refs\.lock/.test(srv),
+  '锁清单包含 index.lock 与 packed-refs.lock 等 git 自己的锁');
+ok(/function clearGitLocksAfterStop/.test(srv) && /clearGitLocksAfterStop\(push\)/.test(srv),
+  '任务在 stopped 与 failed 两个出口都会清锁（用户看到的是"中止即干净"）');
+ok(/spec\.deploy[\s\S]{0,120}clearGitLocks\('本次部署开始前'\)/.test(srv),
+  '部署开始前再清一次（兜住上次被强杀、当场没清干净的情况）');
+ok(/job\.kind==='deploy'\)clearGitLocksAfterStop/.test(srv),
+  '/api/stop 里有兜底清锁（覆盖任务循环没走到 finally 的情况）');
+ok(/fs\.renameSync\(file, file \+ '\.stale-'/.test(srv),
+  '锁文件走"改名挪走"再删（某些环境里同步 unlink 会被删除守卫拖住甚至阻塞）');
+ok(!/rm -rf|rmdir \/s/.test(srv), '没有用 shell 递归删除去清锁');
+
+log('');
+log('== 12c. Markdown 编辑快捷键 ==');
+/* 这一组盯的都是"按下去没反应 / 反应错了"这类只有真用才知道的问题，
+   而且每条都对应一个具体的退化：
+     · 脚本没被 STATIC 路由 / 没被页面引入 → 整个功能静默消失（不报错，只是没反应）；
+     · 直接 ta.value = 新文本 → 撤销栈被清空，Ctrl+Z 救不回误触；
+     · 用 e.key 认键 → 中文输入法打开时 e.key 变成 'Process'，Ctrl+1 直接失灵；
+     · 没躲开浏览器的保留键 → 按下去是关标签页、开控制台，页面连事件都收不到。 */
+const keysCode = stripComments(keysSrc);
+
+ok(STATIC.get('/mdkeys.js') === 'web/mdkeys.js' && fs.existsSync(path.join(WEB, 'mdkeys.js')),
+  'web/mdkeys.js 已在 STATIC 表里注册（否则整个功能 404，且不报错）');
+ok(/<script src="\/mdkeys\.js"><\/script>/.test(html) && /<script src="\/mdkeys\.js"><\/script>/.test(phtml),
+  '两个编辑页都引入了 mdkeys.js（写作台 + 独立页）');
+ok(html.indexOf('/mdkeys.js') < html.indexOf('/editor.js') && phtml.indexOf('/mdkeys.js') < phtml.indexOf('/editor.js'),
+  'mdkeys.js 排在 editor.js 前面（editor 依赖它）');
+ok(/module\.exports/.test(keysSrc) && /root\.MdKeys\s*=\s*api/.test(keysCode),
+  'mdkeys.js 同时导出给 node（单测）和浏览器（globalThis.MdKeys）');
+
+/* 撤销栈：这是"不能直接赋值 textarea.value"的唯一理由 */
+ok(/function writeBack/.test(ed) && /execCommand\('insertText'/.test(ed),
+  '改完文本走 writeBack + execCommand（保住撤销栈）');
+/* 硬写本身不是错，错在把它当主路径 —— 必须是"execCommand 没成功"时的兜底 */
+ok(/if \(!ok \|\| ta\.value !== next\) ta\.value = next/.test(stripComments(ed)),
+  '直接赋值只在 execCommand 失败 / 结果对不上时才兜底（主路径不靠它）');
+ok(/ta\.setSelectionRange\(from, to\)/.test(ed), '只替换真正变了的那一段（先夹出公共前后缀）');
+
+/* 认键必须用 e.code */
+ok(/e\.code/.test(keysCode) && !/e\.key\b/.test(keysCode),
+  '只用 e.code 认键（e.key 在中文输入法下会变成 Process）');
+ok(/e\.isComposing\s*\|\|\s*e\.keyCode\s*===\s*229/.test(stripComments(ed)),
+  '输入法组合中不抢按键（否则打不出中文字）');
+
+/* 浏览器保留键：躲开的要确认没进来，没躲开的（用户点名的）要有 Alt 退路 */
+const bannedCodes = [
+  ['KeyU', 'false'], ['KeyW', 'false'], ['KeyN', 'false'], ['KeyT', 'false'],
+  ['KeyT', 'true'], ['KeyI', 'true'], ['KeyR', 'true'],
+];
+ok(bannedCodes.every(([c, shift]) => !new RegExp("code: '" + c + "', ctrl: true, shift: " + shift).test(keysCode)),
+  '键位表没占用浏览器抢不回来的组合（Ctrl+U/W/N/T、Ctrl+Shift+T/I/R）',
+  bannedCodes.filter(([c, s]) => new RegExp("code: '" + c + "', ctrl: true, shift: " + s).test(keysCode)).join(','));
+ok(/alt \|\| s\.ctrl === mod/.test(keysCode),
+  'Alt 是 Ctrl 的等价替身（Ctrl+1 被浏览器抢走时按 Alt+1 一样生效）');
+ok(/Alt \+ <|把 Ctrl 换成 Alt/.test(keysSrc),
+  '键位表注释里写明了"Ctrl 被浏览器占用时换 Alt"（含原因，不是只留一行结论）');
+
+/* 围栏：光标停在 ``` 那一行时必须解开整块，不能套娃 */
+ok(/function fenceBlocks/.test(keysCode) && /function fenceBlockAt/.test(keysCode),
+  '围栏块按 CommonMark 规则在全文范围内配对');
+ok(/ch === open\.ch && len >= open\.len/.test(keysCode),
+  '闭合围栏必须与开启同字符且不短于它（不同字符只算代码内容）');
+ok(/fenceBlockAt\(text, start, end\)/.test(keysCode) && /const fb = fenceBlockAt/.test(keysCode),
+  '代码块快捷键先看"是不是已经在围栏里"（否则会把围栏行再包一层）');
+
+/* 列表互转不能叠标记 */
+ok(/function listBase/.test(keysCode) && /add: \(l\) => listBase\(l\)/.test(keysCode),
+  '列表互转先拆旧标记（不然 `- [ ] a` 按无序列表会变成 `- - [ ] a`）');
+
+/* 页面侧：面板与按钮 */
+ok(/id="btnKeys"/.test(html) && /id="keysModal"/.test(html) && /id="keysList"/.test(html),
+  '速查面板的三个节点都在 index.html 里');
+ok(/toggleKeys/.test(ed) && /btnKeys'\)\.addEventListener/.test(ed) && /keysModal'\)\.addEventListener/.test(ed),
+  '按钮、遮罩、Ctrl+/ 三条开合路径都接上了');
+ok(/\.keys-grid/.test(css) && /\.krow\b/.test(css), '速查面板的样式已定义（.keys-grid / .krow）');
+/* editor.js 是两页共用模块，独立页没有 btnKeys —— 必须判空，否则 init 直接抛 */
+ok(/if \(\$\('btnKeys'\)\)/.test(ed) && /if \(\$\('keysModal'\)\)/.test(ed),
+  '速查面板相关节点都做了判空（独立编辑页没有这些按钮）');
 
 log('');
 log('== 13. 便携包目录布局 ==');

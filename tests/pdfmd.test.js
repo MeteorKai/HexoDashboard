@@ -475,6 +475,7 @@ test('标题：隔得太远的同字号行不是续行', () => {
 
 const IMG_A = '{% asset_img aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png %}';
 const IMG_B = '{% asset_img bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png %}';
+const IMG_C = '{% asset_img cccccccccccccccccccccccccccccccc.png %}';
 const body = (t, y) => it(t, 50, y, 12);
 
 test('图片：插在它上面的文字之后、下面的文字之前', () => {
@@ -543,6 +544,72 @@ test('图片：不传图片时行为完全不变', () => {
   const b = pdfmd.toMarkdown(pages, { title: '', images: [] }).markdown;
   assert.equal(a, b);
   assert.equal(/asset_img/.test(a), false);
+});
+
+/* 相邻图片的间距**不在 markdown 里做**，交给主题 CSS（`.post-content > img + img`）。
+   以前这里插过 `&nbsp;`，三个原因撤掉了，详见 src/pdfmd.js 里"相邻图片的间距"那段：
+     ① 只覆盖"修复之后导入的文章"——用户手上这篇是修复前导的，于是"明明修过了
+        为什么线上还是贴着"，症状离根因太远；
+     ② 污染正文，导出到 GitHub 等平台是一段莫名其妙的空白段落；
+     ③ 和 CSS 方案叠加会double（图片外边距 + 一整行 &nbsp; 行高 + 段落外边距），
+        同一个页面里出现两种间距反而更乱。
+   这几条测试的意义是**钉住"不再往正文里塞东西"**，防止后来人看到图贴在一起
+   又把这套加回来。 */
+test('图片：两张图中间没有文字时，正文里也不许出现 &nbsp;（间距归主题 CSS 管）', () => {
+  const pages = [pg(1, [
+    body('图片上方的正文，长度足够把正文字号定住不掉档。', 100),
+    body('图片下方的正文，同样足够长，用来当对照。', 500),
+  ])];
+  const r = pdfmd.toMarkdown(pages, {
+    title: '', images: [{ page: 1, yTop: 200, tag: IMG_A }, { page: 1, yTop: 300, tag: IMG_B }],
+  });
+  assert.equal(/&nbsp;/.test(r.markdown), false, '不许再往正文里插空段落');
+  /* 两张图仍然要各自独占一段（中间一个空行）—— 这样它们才是两个块，
+     主题 CSS 的相邻兄弟选择器才认得出"这是两张挨着的图"。 */
+  const lines = r.markdown.split('\n');
+  const ia = lines.indexOf(IMG_A);
+  assert.ok(ia >= 0, '第一张图在正文里');
+  assert.equal(lines[ia + 1], '', '第一张图后面是空行');
+  assert.equal(lines[ia + 2], IMG_B, '空一行就是第二张图（中间没有别的东西）');
+});
+
+test('图片：图与图之间有文字时，不加多余的空段落', () => {
+  const pages = [pg(1, [
+    body('图片上方的正文，长度足够把正文字号定住不掉档。', 100),
+    body('夹在两张图中间的一段正文，要足够长才好定字号。', 260),
+    body('图片下方的正文，同样足够长，用来当对照使用。', 500),
+  ])];
+  const r = pdfmd.toMarkdown(pages, {
+    title: '', images: [{ page: 1, yTop: 200, tag: IMG_A }, { page: 1, yTop: 300, tag: IMG_B }],
+  });
+  assert.equal(/&nbsp;/.test(r.markdown), false, '中间本来就有文字，不需要补空段');
+  assert.equal(r.stats.images, 2);
+});
+
+test('图片：三张图连续出现时仍是三个独立段落，正文里没有 &nbsp;', () => {
+  const pages = [pg(1, [body('正文，长度足够把正文字号定住不掉档才行。', 100)])];
+  const r = pdfmd.toMarkdown(pages, {
+    title: '',
+    images: [
+      { page: 1, yTop: 200, tag: IMG_A },
+      { page: 1, yTop: 260, tag: IMG_B },
+      { page: 1, yTop: 320, tag: IMG_C },
+    ],
+  });
+  const md = r.markdown;
+  assert.equal((md.match(/&nbsp;/g) || []).length, 0);
+  assert.ok(md.indexOf(IMG_A) < md.indexOf(IMG_B) && md.indexOf(IMG_B) < md.indexOf(IMG_C));
+  /* 三张图排在正文那一段之后，各自独占一段、两两之间只有一个空行 */
+  assert.deepEqual(md.trim().split('\n\n').slice(-3), [IMG_A, IMG_B, IMG_C]);
+});
+
+test('图片：扫描件（整篇只有图）也不插 &nbsp;', () => {
+  const r = pdfmd.toMarkdown([pg(1, [])], {
+    title: '', images: [{ page: 1, yTop: 10, tag: IMG_A }, { page: 1, yTop: 90, tag: IMG_B }],
+  });
+  assert.equal(/&nbsp;/.test(r.markdown), false);
+  assert.equal(r.markdown, [IMG_A, IMG_B].join('\n\n') + '\n');
+  assert.equal(r.stats.images, 2);
 });
 
 /* ══ 10. 统计出口 ═══════════════════════════════════════════════════════ */

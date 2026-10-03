@@ -63,6 +63,25 @@ class Client {
   }
 }
 
+/** KeyboardEvent.code → CDP 派键要的三个字段。只需要测试会用到的那几个。 */
+function keyOf(code) {
+  const num = /^Digit(\d)$/.exec(code);
+  if (num) return { key: num[1], code, windowsVirtualKeyCode: 0x30 + Number(num[1]), nativeVirtualKeyCode: 0x30 + Number(num[1]) };
+  const letter = /^Key([A-Z])$/.exec(code);
+  if (letter) {
+    const vk = 0x41 + letter[1].charCodeAt(0) - 65;
+    return { key: letter[1].toLowerCase(), code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, text: letter[1].toLowerCase() };
+  }
+  const map = {
+    Tab: { key: 'Tab', vk: 9 }, Enter: { key: 'Enter', vk: 13, text: '\r' },
+    Backquote: { key: '`', vk: 0xC0, text: '`' }, Slash: { key: '/', vk: 0xBF, text: '/' },
+    Space: { key: ' ', vk: 0x20, text: ' ' },
+  };
+  const m = map[code];
+  if (!m) throw new Error('没映射的键位：' + code);
+  return { key: m.key, code, windowsVirtualKeyCode: m.vk, nativeVirtualKeyCode: m.vk, text: m.text };
+}
+
 async function launch(opts) {
   const o = Object.assign({ port: 9333, width: 1440, height: 900, out: process.cwd() }, opts || {});
   if (!CHROME) throw new Error('找不到 Chrome / Edge');
@@ -133,6 +152,26 @@ async function launch(opts) {
     },
     media: (scheme) => send('Emulation.setEmulatedMedia',
       { features: [{ name: 'prefers-color-scheme', value: scheme }] }),
+
+    /** 按一个组合键。写法 'Alt+Digit1' / 'Ctrl+Shift+KeyK' / 'Tab' / 'Enter'，
+     *  最后一段必须是 KeyboardEvent.code（物理键位）。
+     *
+     *  注意它走的是 Input.dispatchKeyEvent —— 直接投递到渲染进程，
+     *  **不经过浏览器自己的快捷键分发**，所以 Ctrl+1 这种"浏览器会抢走"的组合
+     *  在自动化里照样能到页面。测的是页面里那套逻辑本身，
+     *  至于真实窗口里 Ctrl+1 会不会被浏览器截走，自动化测试回答不了。 */
+    async key(combo) {
+      const parts = String(combo).split('+');
+      const code = parts.pop();
+      const mods = parts.reduce((m, p) => m | (
+        p === 'Alt' ? 1 : p === 'Ctrl' ? 2 : p === 'Meta' ? 4 : p === 'Shift' ? 8 : 0), 0);
+      const k = keyOf(code);
+      for (const type of ['keyDown', 'keyUp']) {
+        await send('Input.dispatchKeyEvent', Object.assign({ type, modifiers: mods }, k,
+          type === 'keyDown' ? { text: k.text } : {}));
+      }
+      await sleep(60);
+    },
 
     async shot(name) {
       const { data } = await send('Page.captureScreenshot', { format: 'png' });

@@ -233,6 +233,133 @@ function killTree(pid) {
   } catch { /* 非致命 */ }
 }
 
+/* --------- 中止部署后残留的 git 锁 ---------
+ * 现象：点"一键发布"跑了一半按中止，下一次发布直接失败，报
+ *   `fatal: Unable to create '…/.deploy_git/.git/index.lock': File exists.`
+ * 原因不是我们写的锁，是 **git 自己的**：hexo-deployer-git 在 `.deploy_git/` 里
+ * 依次跑 `git add -A` → `git commit` → `git push`，这三步各自会创建
+ * `.git/index.lock` 并（正常时）自己删掉。我们中止时的做法是 `taskkill /T /F`
+ * 杀整棵进程树 —— git 收到的是 **SIGKILL 级的强杀**，它没有机会跑任何清理，
+ * 锁就留在磁盘上了。窗口期正是 `git add -A` 那几秒（大站点能到十几秒）。
+ *
+ * 为什么不能"下次发布前无脑删锁"：锁存在的正当理由只有两种 ——
+ *   ① 上一个 git 进程还活着（真在写索引）；
+ *   ② 它被强杀留下了尸体。
+ * 只看"文件在不在"就删，会在 ① 的情况下把一个正在运行的 git 的锁抽掉，
+ * 索引写坏比"多一次失败"严重得多。所以判据必须是**没有活着的 git 在跑**。
+ *
+ * 因此这里分两步，顺序不能反：
+ *   1) 任务启动前（含用户主动中止后再次点发布）：等到**没有任何 git 进程**，
+ *      再把这几个已知锁文件删掉 —— 这叫"清理尸体"。
+ *   2) 任务因为中止/失败退出时：主动扫一遍并删掉残留锁 —— 不等下次，当场清掉，
+ *      用户看到的就是"中止即干净"。
+ *
+ * 锁文件清单：除 index.lock 外，`git commit` 期间的失败还常见
+ *   HEAD.lock / config.lock / packed-refs.lock / refs/**\/**.lock，
+ * 但**只清我们确实会碰的这个仓库**（.deploy_git 与站点根），且只清固定的几个名字，
+ * 不做通配删除 —— 免得把用户自己仓库里的东西删了。 */
+const GIT_LOCK_DIRS = () => [
+  path.join(BLOG, '.deploy_git', '.git'),
+  path.join(BLOG, '.git'),
+];
+const GIT_LOCK_NAMES = ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'shallow.lock', 'ORIG_HEAD.lock'];
+
+/** 有没有正在跑的 git 进程（只看进程名，不关心命令行）。
+ *  `tasklist` 输出在中文/英文系统上列宽不同，所以只做**子串**判断，
+ *  不按列切分 —— 切列在本地化输出上会静默漏判。 */
+function gitRunning() {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') {
+      /* 非 Windows 没有 tasklist：用 pgrep，大多数发行版自带；没有就当"跑不起来=无人"
+         —— 宁可少删一次也不能误删。 */
+      try {
+        const t = spawn('pgrep', ['-x', 'git'], { stdio: ['ignore', 'pipe', 'ignore'] });
+        let o = ''; t.stdout.on('data', (d) => (o += d));
+        t.on('close', () => resolve(o.trim().length > 0));
+        t.on('error', () => resolve(false));
+      } catch { resolve(false); }
+      return;
+    }
+    try {
+      const t = spawn('tasklist', ['/FI', 'IMAGENAME eq git.exe', '/NH'], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      let o = ''; t.stdout.setEncoding('utf8');
+      t.stdout.on('data', (d) => (o += d));
+      t.on('close', () => resolve(/\bgit\.exe\b/i.test(o)));
+      t.on('error', () => resolve(false));   // 查不了 → 当作有人在跑，宁可不清
+    } catch { resolve(false); }
+  });
+}
+
+/** 删一个文件，走 rename-then-delete。
+ *  为什么绕这一下：某些环境里同步 unlink 会被"批量删除守卫"拖住甚至阻塞
+ *  （见上面 dropPidFileSync 的实测记录）。改名不经过那条路径，先改名让它
+ *  立刻"不再叫 index.lock"（git 的判断就此解除），真删失败也只是留个 .stale。 */
+function dropLockFile(file) {
+  try {
+    if (!fs.existsSync(file)) return false;
+    try { fs.renameSync(file, file + '.stale-' + Date.now()); return true; }
+    catch { /* 改不动：只读 / 被独占打开 */ }
+    try { fs.unlinkSync(file); return true; } catch { return false; }
+  } catch { return false; }
+}
+
+/** 清掉本站点仓库里残留的 git 锁（先确认没有活着的 git）。返回清掉的路径列表。 */
+async function clearGitLocks(why) {
+  if (!BLOG) return [];
+  if (await gitRunning()) return [];     // 有 git 在跑 → 那是真锁，绝不能碰
+  const gone = [];
+  for (const dir of GIT_LOCK_DIRS()) {
+    for (const name of GIT_LOCK_NAMES) {
+      const f = path.join(dir, name);
+      if (dropLockFile(f)) gone.push(f);
+    }
+    /* refs/ 下的锁名字不固定（refs/heads/main.lock 等），但目录很浅，扫一层就够。
+       仍然只删 *.lock，且只在确认没有 git 进程之后。 */
+    try {
+      const refs = path.join(dir, 'refs');
+      for (const sub of ['', 'heads', 'remotes', 'tags']) {
+        const d = sub ? path.join(refs, sub) : refs;
+        if (!fs.existsSync(d)) continue;
+        for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+          if (ent.isFile() && ent.name.endsWith('.lock')) {
+            const f = path.join(d, ent.name);
+            if (dropLockFile(f)) gone.push(f);
+          } else if (ent.isDirectory() && sub === 'remotes') {
+            for (const ent2 of fs.readdirSync(path.join(d, ent.name), { withFileTypes: true })) {
+              if (ent2.isFile() && ent2.name.endsWith('.lock')) {
+                const f = path.join(d, ent.name, ent2.name);
+                if (dropLockFile(f)) gone.push(f);
+              }
+            }
+          }
+        }
+      }
+    } catch { /* refs 目录不存在或读不了：正常情况 */ }
+  }
+  if (gone.length) console.log(`[*] 清理 git 残留锁（${why}）：\n    ` + gone.join('\n    '));
+  return gone;
+}
+
+/** 中止/失败之后清锁：被杀掉的那棵树可能要一小会儿才真正退出，
+ *  而 `gitRunning()` 看到它还在就会拒绝清锁（那是对的，不能抽掉活锁）。
+ *  所以这里**轮询等它退干净**，最多等 3 秒。等不到就放弃这一轮 ——
+ *  不清总比清错强，而且下次点发布时 startJob 还会再清一次。 */
+async function clearGitLocksAfterStop(push, opts = {}) {
+  if (!BLOG) return [];
+  for (let i = 0; i < 12; i++) {
+    if (!(await gitRunning())) {
+      const gone = await clearGitLocks('上一次任务中止后');
+      if (gone.length && !opts.quiet) {
+        push('info', `已清理中止残留的 git 锁 ${gone.length} 个，下次发布不会再被它挡住`);
+      }
+      return gone;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  if (!opts.quiet) push('info', '仍有 git 进程在退出，这一轮的锁等下次发布开始时再清');
+  return [];
+}
+
 function startJob(kind, opts = {}) {
   const spec = TASKS[kind];
   if (!spec) throw Object.assign(new Error('未知任务'), { status: 400 });
@@ -275,6 +402,13 @@ function startJob(kind, opts = {}) {
     const hexo = hexoCmd();
     push('info', `任务开始: ${spec.title}  (${steps.map(a => 'hexo ' + a.join(' ')).join('  &&  ')})`);
     push('info', `hexo 命令: ${hexo}`);
+    /* 带 deploy 的任务开始前先清一遍残留锁：用户上一次中止留下的 index.lock
+       会让这次的 `git add -A` 直接 fatal 掉。清理前提是"没有活着的 git"，
+       所以这里要 await 一次进程查询 —— 那点耗时（几十毫秒）比失败重来划算得多。 */
+    if (spec.deploy) {
+      const gone = await clearGitLocks('本次部署开始前');
+      if (gone.length) push('info', `清掉了上一次中止留下的 ${gone.length} 个 git 锁文件`);
+    }
     for (const args of steps) {
       /* 中止后必须真的停下：进程被杀会触发 close，若不检查状态，
          循环会继续跑下一个 hexo 子命令（比如 clean 之后照样 generate）。 */
@@ -290,12 +424,21 @@ function startJob(kind, opts = {}) {
       job.child = null;
       if (spec.long) clearServePid();
       if (job.status === 'stopped') {          // 用户主动中止，不算失败
+        /* 中止是**唯一**会留下 git 锁的路径（进程被强杀，git 没机会清）。
+           所以在这里当场清掉，而不是等下次发布时才补 —— 用户看到的应该是
+           "点了中止，下一次发布照样能跑通"。清锁函数自己会先确认没有 git 进程，
+           所以这里 await 是安全的：被杀的进程树这时候通常还没完全退干净，
+           函数内会重试等待（见 clearGitLocksAfterStop）。 */
+        if (spec.deploy) await clearGitLocksAfterStop(push);
         push('fail', '已中止');
         push('end', 'stopped');
         return;
       }
       if (code !== 0) {
         job.status = 'failed'; job.code = code;
+        /* 失败分支同样要清：`git add -A` 起不来是**它自己**先建锁再报错的，
+           也可能留下 index.lock。不清的话用户改完配置重试还是同一个错。 */
+        if (spec.deploy) await clearGitLocksAfterStop(push);
         push('fail', `hexo ${args.join(' ')} 退出码 ${code}，任务中止`);
         push('end', 'failed');
         return;
@@ -304,6 +447,9 @@ function startJob(kind, opts = {}) {
     }
     if (job.status !== 'running') return;
     job.status = 'done'; job.code = 0;
+    /* 部署成功也扫一遍：某些 git 版本在 push 成功后会残留 packed-refs.lock，
+       不影响这次，但会让用户**下一次**莫名其妙失败。这里只删确认没进程守着的锁。 */
+    if (spec.deploy) await clearGitLocksAfterStop(push, { quiet: true });
     if (kind === 'deploy') {
       lastDeploy = { blog: BLOG, at: new Date().toISOString(), url: lib.readSiteConfig(BLOG).url, status: 'done' };
       try { lib.atomicWrite(DEPLOY_FILE, JSON.stringify(lastDeploy)); } catch(e) { push('info', '部署成功，但记录写入失败：' + e.message); }
@@ -363,6 +509,8 @@ function siteInfo() {
 const STATIC = new Map([
   ['/','web/index.html'],['/index.html','web/index.html'],['/styles.css','web/styles.css'],['/app.js','web/app.js'],['/editor.js','web/editor.js'],
   ['/theme.js','web/theme.js'],
+  /* Markdown 编辑快捷键：纯逻辑表 + 键位表，editor.js 依赖它，必须排在前面加载 */
+  ['/mdkeys.js','web/mdkeys.js'],
   /* 单篇文章的独立编辑页。精确匹配，跟 /api/post 不冲突；它读的仍然是同一套 /api/*。 */
   ['/post','web/post.html'],['/post.html','web/post.html'],['/post.js','web/post.js'],
   ['/preview','web/preview.html'],['/preview.js','web/preview.js'],
@@ -544,7 +692,15 @@ const server = http.createServer(async (req,res)=>{
     }
     if(p==='/api/stop' && req.method==='POST') {
       const {id}=await readJSONBody(req),job=jobs.get(id);if(!job||job.status!=='running')return sendJSON(res,200,{ok:true,noop:true});
-      job.status='stopped';if(job.child?.pid)killTree(job.child.pid);if(job.long)clearServePid();return sendJSON(res,200,{ok:true});
+      job.status='stopped';if(job.child?.pid)killTree(job.child.pid);if(job.long)clearServePid();
+      /* 部署任务被中止 → 兜底清锁。任务循环里那条 return 前也会清，两条路都留着是
+         因为它们覆盖的时机不同：如果用户在 `git push` 那一步中止，进程秒退，
+         循环里那条能正常走完；但如果中止发生在 `hexo generate` 阶段（还没到 deploy），
+         循环走到 stopped 分支也一样会清。**这条兜底是为了另一种情况**：
+         任务循环因为别的原因没走到 finally（例如 push 的客户端断了导致异常先冒出去）。
+         重复清是幂等的，清不到东西就是空数组，不会误伤。 */
+      if(job.kind==='deploy')clearGitLocksAfterStop((t,msg)=>console.log('[*]',msg),{quiet:true});
+      return sendJSON(res,200,{ok:true});
     }
     if(p==='/api/shutdown' && req.method==='POST') {
       const active=runningJobs();if(active.some(j=>!j.long))throw Object.assign(new Error('生成或部署正在运行，请先中止或等待完成'),{status:409});

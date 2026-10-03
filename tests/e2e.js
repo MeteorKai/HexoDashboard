@@ -110,8 +110,19 @@ const DEL = (p) => req({ method: 'DELETE', path: p, headers: { 'x-hexo-token': T
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* 假 hexo：一个立刻成功退出的包装脚本。第 14 组要验证"部署开始前清残留锁"，
+   这一步发生在跑 hexo **之前**，所以用一个不干活的命令最安全 —— 不会真去
+   generate / deploy，也就绝不会碰到你的仓库或远端。
+   为什么写成 .cmd/.sh 而不是 .js：HEXO_CMD 是**当可执行文件** spawn 的
+   （见 server.js 的 runStep），.js 直接 spawn 会 ENOENT。 */
+const FAKE_HEXO = process.platform === 'win32'
+  ? path.join(os.tmpdir(), 'hexo-tool-e2e-fake-hexo.cmd')
+  : path.join(os.tmpdir(), 'hexo-tool-e2e-fake-hexo.sh');
+fs.writeFileSync(FAKE_HEXO, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n', 'utf8');
+if (process.platform !== 'win32') { try { fs.chmodSync(FAKE_HEXO, 0o755); } catch { /* ignore */ } }
+
 const srv = spawn(process.execPath, [path.join(TOOL, 'src', 'server.js'), BLOG], {
-  env: { ...process.env, PORT: String(PORT) }, cwd: TOOL, stdio: ['ignore', 'pipe', 'pipe'],
+  env: { ...process.env, PORT: String(PORT), HEXO_CMD: FAKE_HEXO }, cwd: TOOL, stdio: ['ignore', 'pipe', 'pipe'],
 });
 let slog = ''; srv.stdout.on('data', (c) => slog += c); srv.stderr.on('data', (c) => slog += c);
 
@@ -291,6 +302,23 @@ let slog = ''; srv.stdout.on('data', (c) => slog += c); srv.stderr.on('data', (c
   check(unknown.code === 400, '未知任务 → 400', unknown.code + ' ' + j(unknown).error);
   const goodInfo = j(await GET('/api/info'));
   check(goodInfo.deploy && goodInfo.deploy.repo, 'deploy 预检所需字段齐全（前端据此给确认文案）');
+
+  /* 中止部署后清 git 残留锁（用户实测：一键发布跑到一半按中止，下一次发布直接被
+     `Unable to create '…/.deploy_git/.git/index.lock': File exists` 挡死）。
+     这里不真跑 hexo：用 HEXO_CMD 指到一个立刻成功退出的假命令，重点验证的是
+     "任务开始前会把残留锁清掉"这条 —— 它发生在跑 hexo 之前，与 hexo 本身无关。 */
+  const FAKE_GIT_DIR = path.join(BLOG, '.deploy_git', '.git');
+  fs.mkdirSync(FAKE_GIT_DIR, { recursive: true });
+  const staleLock = path.join(FAKE_GIT_DIR, 'index.lock');
+  fs.writeFileSync(staleLock, 'stale', 'utf8');
+  check(fs.existsSync(staleLock), '前置：造了一个残留的 index.lock');
+  const runDeploy = await POST('/api/run', { kind: 'deploy' });
+  check(runDeploy.code === 200, '带 deploy 的任务能起来（HEXO_CMD 是假命令）', runDeploy.code + ' ' + j(runDeploy).error);
+  /* 清锁是异步的（先查有没有 git 在跑），给它一点时间。 */
+  await new Promise((r) => setTimeout(r, 900));
+  check(!fs.existsSync(staleLock), '部署开始前残留的 index.lock 已被清掉（下次发布不会被它挡住）');
+  const ranId = j(runDeploy).id;
+  if (ranId) await POST('/api/stop', { id: ranId });
 
   log('');
   log('== 15. 编译产物路径（「编译」跑完靠它给出本文的直达链接）==');
