@@ -534,13 +534,21 @@
      * 转换在服务端做（/api/import-pdf），页面只管把文件字节发过去。 */
     importPdf: async (file) => {
       const buf = await file.arrayBuffer();
-      const r = await api('/api/import-pdf?title=' + encodeURIComponent(file.name.replace(/\.pdf$/i, '')), {
+      /* 带上 post/draft：图片要存进**这篇文章自己的**同名资源目录。少了这两个参数，
+         服务端只会按标题猜目录名，插进现有文章里就会指到不存在的路径上。 */
+      const q = 'title=' + encodeURIComponent(file.name.replace(/\.pdf$/i, '')) +
+        '&post=' + encodeURIComponent(state.name) + '&draft=' + (state.draft ? 1 : 0);
+      const r = await api('/api/import-pdf?' + q, {
         method: 'POST',
         headers: { 'Content-Type': 'application/pdf' },
         body: buf,
       });
       window.Editor.insertText(r.markdown, false);
-      return { stats: r.stats, hint: '已插到光标处，记得保存' };
+      const n = (r.assets && r.assets.count) || 0;
+      const hint = n ? `已插到光标处，${n} 张图已存进本文资源目录，记得保存`
+        : (r.assetFolder === false ? '已插到光标处（博客没开 post_asset_folder，图片不能存进文章目录）'
+          : '已插到光标处，记得保存');
+      return { stats: r.stats, hint };
     },
   });
 

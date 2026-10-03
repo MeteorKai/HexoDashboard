@@ -219,6 +219,17 @@ function writePost(blogRoot, { name, meta, body, originalName, originalDraft, re
   const content='---'+parsed.eol+header+parsed.eol+'---'+parsed.eol+String(body || '');
   if(previous!==null)storage.backupPost(blogRoot,originalName,originalDraft,previous);
   if(originalName && (originalName!==name || !!originalDraft!==!!meta.draft))storage.moveHistory(blogRoot,originalName,originalDraft,name,meta.draft);
+  /* 导入 PDF 时图片已经先写进了"文章同名资源目录"，但那时是按导入时的草稿标记
+     挑的目录（/_drafts 或 /_posts）。用户保存前把"存为草稿"的勾改掉是很常见的，
+     而新文章 originalName 为空 → 下面那段"跟随改名搬目录"的逻辑不会触发 →
+     图片留在另一边，正文里的 asset_img 全部找不到文件。
+     所以新建文章时先看一眼另一边有没有**只有资源目录、没有同名 md** 的残留
+     （有 md 说明那是另一篇真文章，绝不能动），有就把它搬过来。 */
+  if(previous==null && !oldAssets && !fs.existsSync(assets)){
+    const other=postDir(blogRoot,!meta.draft);
+    const sibling=resolveInside(other,name,'');
+    if(sibling!==assets && fs.existsSync(sibling) && !fs.existsSync(resolveInside(other,name)))fs.renameSync(sibling,assets);
+  }
   fs.mkdirSync(dir,{recursive:true});let moved=false,createdAssets=false;
   try {
     storage.atomicWrite(file,content);

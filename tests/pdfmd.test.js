@@ -370,7 +370,182 @@ test('标题：以逗号收尾的长句不是标题', () => {
   assert.match(r.markdown, /这是一句话，/);
 });
 
-/* ══ 9. 统计出口 ════════════════════════════════════════════════════════ */
+test('标题：软换行成两行的长标题要整体抽走，不能切一半', () => {
+  /* 真 PDF 反例：蓝鲸那篇的标题在版面上排成两行
+       「记一次蓝鲸智云容器管理平台(BlueKing Container Service)」+「的代码审计」
+     只取第一行时：前半截进了 front-matter 的 title，后半截留在正文里、
+     又因为字号同样是最大档而被判成 `## 的代码审计`。
+     注意首行是以 `)` 收尾的 —— 判"这行说完了没有"在那边**不能用 TERMINAL**
+     （它含右括号），否则这种标题照样被切开。 */
+  const pages = [pg(1, [
+    it('记一次蓝鲸智云容器管理平台(BlueKing Container Service)', 50, 50, 20),
+    it('的代码审计', 50, 74, 20),
+    it('一、前言', 50, 150, 16),
+    it('这是一段足够长的正文，用来把正文字号定在 12 上面，长度也够用了。', 50, 210, 12),
+    it('这是第二段同样足够长的正文内容，方便把字号定住不掉档。', 50, 230, 12),
+  ])];
+  const r = run(pages);
+  assert.equal(r.title, '记一次蓝鲸智云容器管理平台(BlueKing Container Service)的代码审计');
+  assert.equal(/^##\s*的代码审计/m.test(r.markdown), false, '后半截不能留在正文里当标题');
+  assert.equal(/的代码审计/.test(r.markdown), false, '后半截压根不该出现在正文里');
+});
+
+test('标题：续行吸收不能把副标题并进来', () => {
+  const pages = [pg(1, [
+    it('短标题', 50, 50, 20),
+    it('这一行小一号字，是副标题不是续行', 50, 74, 18),
+    it('这是一段足够长的正文，用来把正文字号定在 12 上面。', 50, 130, 12),
+    it('这是第二段同样足够长的正文内容，方便定住字号。', 50, 150, 12),
+  ])];
+  const r = run(pages);
+  assert.equal(r.title, '短标题', '差 2pt 就不是同一行标题的续行');
+  assert.match(r.markdown, /这一行小一号字/, '副标题要留在正文里');
+});
+
+test('标题：折三行、第三行已越过"页面上部"那条线时也要接上', () => {
+  /* 上面那条 40% 的线只用来**定位标题的第一行**。
+     续行如果也要求自己落在 40% 以内，长标题折三行时第三行就会被漏掉 —— 又切一半。 */
+  /* 宽度显式给：折行的前两截要"排满"到正文右边界（xEnd 450），最后一截不必 */
+  const pages = [pg(1, [
+    it('记一次蓝鲸智云容器管理平台的代码审计（上）', 50, 300, 20, 400),
+    it('：从一次未授权访问说起', 50, 324, 20, 400),
+    it('以及一些杂七杂八的补充', 50, 348, 20, 100),     // 842×0.4 = 336.8，这行已越线
+    it('这是一段足够长的正文，用来把正文字号定在 12 上面，长度也够用了。', 50, 420, 12, 400),
+    it('这是第二段同样足够长的正文内容，方便把字号定住不掉档。', 50, 440, 12, 400),
+  ])];
+  const r = run(pages);
+  assert.equal(r.title, '记一次蓝鲸智云容器管理平台的代码审计（上）：从一次未授权访问说起以及一些杂七杂八的补充');
+  assert.equal(/杂七杂八/.test(r.markdown), false, '第三行也不能留在正文里');
+});
+
+test('标题：给了文件名的情况下，软换行标题在正文里要合成一个 ##', () => {
+  /* 现在导入默认用**文件名**当标题（见 pdfimport.js），版面里的大标题整篇留在正文。
+     这时那行软换行的长标题如果不合并，正文里就会出现两个 `##` —— 半截标题
+     明晃晃挂在正文开头，和"标题被切两半"是同一个病。 */
+  const pages = [pg(1, [
+    it('记一次蓝鲸智云容器管理平台(BlueKing Container Service)', 50, 50, 20),
+    it('的代码审计', 50, 74, 20),
+    it('这是一段足够长的正文，用来把正文字号定在 12 上面，长度也够用了。', 50, 150, 12),
+    it('这是第二段同样足够长的正文内容，方便把字号定住不掉档。', 50, 170, 12),
+  ])];
+  const r = run(pages, '记一次蓝鲸智云容器管理平台的代码审计');
+  assert.equal(r.title, '记一次蓝鲸智云容器管理平台的代码审计', '标题原样用传入的文件名');
+  assert.equal(r.stats.headings, 1, '两行版面标题在正文里算**一个**标题');
+  assert.match(r.markdown, /^## 记一次蓝鲸智云容器管理平台\(BlueKing Container Service\)的代码审计$/m);
+  assert.equal(/^##\s*的代码审计/m.test(r.markdown), false, '不能出现孤零零的半个标题');
+});
+
+test('标题：上一行没排满时，后面的同字号行是另一个标题（蓝鲸真 PDF 反例）', () => {
+  /* 真 PDF 第 1 页实测几何（页面 612 宽，正文右边界 557.2）：
+       行0 记一次…(BlueKing Container Service)   xEnd 547.1  ← 排满
+       行1 的代码审计                            xEnd 146.2  ← 远没排满
+       行2 未认证 kubeconfig 校验 → 服务端 RCE    xEnd 376.1
+     行0 排满 → 行1 是它的续行；行1 没排满 → 行2 是**独立标题**。
+     只看字号和行距的话三行会被并成一句
+     「…的代码审计未认证 kubeconfig 校验 → 服务端 RCE」。 */
+  const body = (y) => it('这是一段足够长的正文，用来把正文字号定在 12 上面，长度也够用了的啊。', 51.7, y, 12, 495.5);
+  const pages = [pg(1, [
+    it('记一次蓝鲸智云容器管理平台(BlueKing Container Service)', 51.7, 71.2, 19, 495.4),
+    it('的代码审计', 51.7, 94.5, 19, 94.5),
+    it('未认证 kubeconfig 校验 → 服务端 RCE', 51.7, 128.2, 19, 324.4),
+    body(160), body(178), body(196),
+  ], 612, 792)];
+  const r = run(pages);
+  assert.equal(r.title, '记一次蓝鲸智云容器管理平台(BlueKing Container Service)的代码审计');
+  assert.match(r.markdown, /^## 未认证 kubeconfig 校验 → 服务端 RCE$/m, '副标题要独立成一行');
+  assert.equal(/的代码审计/.test(r.markdown), false, '被抽去当标题的两行不该再出现在正文里');
+});
+
+test('标题：隔得太远的同字号行不是续行', () => {
+  const pages = [pg(1, [
+    it('标题甲', 50, 50, 20),
+    it('标题乙', 50, 200, 20),                       // 行距 150 >> 20×1.8
+    it('这是一段足够长的正文，用来把正文字号定在 12 上面。', 50, 260, 12),
+    it('这是第二段同样足够长的正文内容，方便定住字号。', 50, 280, 12),
+  ])];
+  const r = run(pages);
+  assert.equal(r.title, '标题甲');
+  assert.match(r.markdown, /^## 标题乙/m, '离得远的同字号行是另一个标题，不能并进 title');
+});
+
+/* ══ 9. 图片插位 ════════════════════════════════════════════════════════
+ * 图片从 pdfimage.js 来，带着"第几页、离页顶多远"。这里的判据只有一条：
+ * 图在谁上面就插在谁前面。最容易写错的是**忘了先收口段落** —— 那样图会被塞进
+ * 一个段落中间，markdown 里变成"一段文字里夹一行 asset_img"。 */
+
+const IMG_A = '{% asset_img aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png %}';
+const IMG_B = '{% asset_img bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png %}';
+const body = (t, y) => it(t, 50, y, 12);
+
+test('图片：插在它上面的文字之后、下面的文字之前', () => {
+  const pages = [pg(1, [
+    body('第一段正文，长度足够把正文字号定住不掉档。', 100),
+    body('第二段正文，同样足够长，用来当图片上方的文字。', 140),
+    body('第三段正文，用来当图片下方的文字。', 300),
+  ])];
+  const r = pdfmd.toMarkdown(pages, { title: '', images: [{ page: 1, yTop: 200, tag: IMG_A }] });
+  const iImg = r.markdown.indexOf(IMG_A);
+  assert.ok(iImg > 0, '图要出现在正文里');
+  assert.ok(iImg > r.markdown.indexOf('第二段'), '图要在它上方那段文字之后');
+  assert.ok(iImg < r.markdown.indexOf('第三段'), '图要在它下方那段文字之前');
+  assert.equal(r.stats.images, 1);
+});
+
+test('图片：必须独占一行，不能粘进段落里', () => {
+  /* 反过来写（不 flush 就 push）的话，图会跟后面的文字拼成一段，
+     Hexo 解析 asset_img 时也会因为行首有别的字符而失败。 */
+  const pages = [pg(1, [
+    body('第一段正文，长度足够把正文字号定住不掉档。', 100),
+    body('第二段正文，同样足够长，用来当图片上方的文字。', 140),
+  ])];
+  const r = pdfmd.toMarkdown(pages, { title: '', images: [{ page: 1, yTop: 120, tag: IMG_A }] });
+  /* 判"独占一行"要**逐行**看：写成 /\S\s*\{% asset_img/ 会把上一行的句号算进来
+     （\s 匹配换行），于是永远为真 —— 这条断言自己先翻过一次车。 */
+  const tagLines = r.markdown.split('\n').filter((l) => l.includes('asset_img'));
+  assert.equal(tagLines.length, 1);
+  assert.equal(tagLines[0], IMG_A, 'asset_img 独占一行，前后都不挂字');
+});
+
+test('图片：同一页的两张图按纵向顺序排', () => {
+  const pages = [pg(1, [
+    body('第一段正文，长度足够把正文字号定住不掉档。', 100),
+    body('第二段正文，同样足够长，用来当图片上方的文字。', 320),
+  ])];
+  const r = pdfmd.toMarkdown(pages, {
+    title: '', images: [{ page: 1, yTop: 300, tag: IMG_B }, { page: 1, yTop: 200, tag: IMG_A }],
+  });
+  assert.ok(r.markdown.indexOf(IMG_A) < r.markdown.indexOf(IMG_B), 'yTop 小的排在前面（传参顺序被打乱也要排对）');
+  assert.equal(r.stats.images, 2);
+});
+
+test('图片：跨页的图不能提前插到前一页里去', () => {
+  const pages = [
+    pg(1, [body('第一页的正文，长度足够把正文字号定住不掉档。', 100)]),
+    pg(2, [body('第二页的正文，长度足够把正文字号定住不掉档。', 100)]),
+  ];
+  const r = pdfmd.toMarkdown(pages, { title: '', images: [{ page: 2, yTop: 50, tag: IMG_A }] });
+  assert.ok(r.markdown.indexOf('第一页') < r.markdown.indexOf(IMG_A), '第 2 页的图不能跑到第 1 页的文字前面');
+  assert.ok(r.markdown.indexOf(IMG_A) < r.markdown.indexOf('第二页'), '但它要在第 2 页的文字前面');
+});
+
+test('图片：整份 PDF 没有文字（扫描件）时，图照样要出来', () => {
+  const r = pdfmd.toMarkdown([pg(1, [])], { title: '', images: [{ page: 1, yTop: 10, tag: IMG_A }] });
+  assert.equal(r.markdown.trim(), IMG_A, '没有文字时正文就是那几张图');
+  assert.equal(r.stats.images, 1);
+});
+
+test('图片：不传图片时行为完全不变', () => {
+  const pages = [pg(1, [
+    body('第一段正文，长度足够把正文字号定住不掉档。', 100),
+    body('第二段正文，同样足够长，用来当对照。', 140),
+  ])];
+  const a = pdfmd.toMarkdown(pages, { title: '' }).markdown;
+  const b = pdfmd.toMarkdown(pages, { title: '', images: [] }).markdown;
+  assert.equal(a, b);
+  assert.equal(/asset_img/.test(a), false);
+});
+
+/* ══ 10. 统计出口 ═══════════════════════════════════════════════════════ */
 
 test('stats：页码、字数、标题数、列表数、代码块数、修部首数都报出来', () => {
   const pages = [

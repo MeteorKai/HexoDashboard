@@ -228,6 +228,48 @@ ok(/window\.Editor\.insertText\(/.test(pjs), '单篇页把转出来的内容插�
 /* 导入是"只算不改"，不该被生成/部署卡住；别的写接口都在那条 409 名单里 */
 ok(/\^\\\/api\\\/\(post\|posts\|publish\|upload\|assets\|trash\)/.test(srv), '导入不在"运行中禁止改动"的名单里（它只转换、不写博客）');
 
+/* ── 取图这条链（pdfimage.js）────────────────────────────────────────────
+ * 这一整块都是踩出来的，每一行都对应一个真实反例，别当成可选项删掉：
+ *   · 见到 /Subtype /Image 就导出 → 蓝鲸那篇 58 个对象里 40 个是**软蒙版**，
+ *     导出成 40 张白图（白占比 90~97%）。蒙版是经 ExtGState/SMask 生效的，
+ *     成对出现（2136×1337 与 2144×1345，分别是图本体和外阴影）。
+ *   · pdf.js 在 Node 里**取不到图像字节**（没有 canvas，page.objs 是空的），
+ *     所以字节只能自己按 PDF 对象解；但位置/顺序要问 pdf.js（它把 Form 展平了）。
+ *   · FlateDecode 的图常带 /Predictor 15（PNG 自适应），不反算导出的是差分
+ *     数据，看起来就是一片噪声。
+ *   · 资源目录名必须和保存时算出来的**完全一致**，否则一保存图片全部失联。 */
+const pimgSrc = fs.readFileSync(path.join(ROOT, 'src', 'pdfimage.js'), 'utf8');
+/* 只看**运行时依赖**：把命令行自检那一块（`if (require.main === module)` 之后）
+   切掉再扫 require —— 自检要用 fs/path/pdfimport 是应该的，跟"引了第三方库"不是一回事。 */
+const pimgLib = pimgSrc.slice(0, pimgSrc.indexOf('if (require.main === module)'));
+const pimgImports = [...pimgLib.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1])
+  .filter((m) => !m.startsWith('.'));
+ok(pimgImports.length && pimgImports.every((m) => m === 'zlib'),
+  'pdfimage.js 只依赖 zlib（PNG 编码、预测器反算都是自己写的，不引 canvas / sharp）',
+  pimgImports.join(','));
+ok(/require\('\.\/pdfimport'\)/.test(pimgLib) === false,
+  '运行时区段里不反向依赖 pdfimport（避免循环 require；取 pdf.js 实例挪到自检块里）');
+ok(/pngEncode|IDAT/.test(pimgSrc), '自己写 PNG（不依赖 canvas / sharp）');
+ok(/undoPredictor/.test(pimgSrc) && /Predictor/.test(pimgSrc), '处理 FlateDecode 的 /Predictor（不反算导出的是差分数据，看着像噪声）');
+ok(/DCTDecode/.test(pimgSrc) && /0xff.*0xd8|0xFF.*0xD8|0xd8/.test(pimgSrc), 'DCTDecode 直接取原始 JPEG 字节（PDF 里存的就是完整 JFIF）');
+ok(/maskNumbers/.test(pimgSrc) && /SMask/.test(pimgSrc), '识别软蒙版（/SMask 的 /G 指到的对象不算图）');
+ok(/paintImageXObject/.test(pimgSrc) && /getOperatorList/.test(pimgSrc),
+  '位置/顺序问 pdf.js 的 operator list（它把 Form、ExtGState 展平了）');
+ok(/pdfimage\.extract/.test(pimpSrc), 'pdfimport.js 调 pdfimage.extract 取图');
+ok(/typeof images === 'function'/.test(pimpSrc) && /images\(imgs\[i\], i\)/.test(pimpSrc),
+  'pdfimport 用回调把图交给调用方（写文件/定资源名留在 server，插在哪一行留在 pdfmd）');
+ok(/lib\.assetName\(im\.data/.test(srv) && /lib\.assetTag\(/.test(srv),
+  'server.js 用与手动上传同一套资源命名（内容哈希 + asset_img 标签），不另起一套');
+ok(/lib\.sanitizeName\(assetBase\)/.test(srv),
+  '资源目录名按保存时的同一条规则算（lib.sanitizeName）—— 不一致的话一保存图片就全部失联');
+ok(/qDraft=url\.searchParams\.get\('draft'\)==='1'/.test(srv) && /assetDraft/.test(srv),
+  '导入接口认 draft 参数（否则图会写进 _posts、而文章在 _drafts，发布时找不到图）');
+ok(/draft=1/.test(app), '写作台导入时把 draft=1 传给服务端（默认就是存草稿）');
+ok(/r\.assets \|\| \{\}\)\.name|r\.assets\s*&&/.test(app), '写作台把服务端回传的目录名写进 f-name（保存后目录才不会错位）');
+ok(/&post=' \+ encodeURIComponent\(state\.name\)/.test(pjs), '单篇页把 post 名传给服务端（图片要存进这篇文章的资源目录）');
+ok(/assetFolder/.test(srv) && /postAssetFolder/.test(srv),
+  '没开 post_asset_folder 时不硬塞图片目录（如实回 assetFolder=false 让前端说明白）');
+
 /* 真浏览器验收（tests/shot-pdf.js + tests/cdp.js）这条链的静态守护。
    下面两条都是踩过的坑，而且症状离真相很远，值得钉死。 */
 const e2eSrc = fs.readFileSync(path.join(ROOT, 'tests', 'e2e.js'), 'utf8');

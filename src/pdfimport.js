@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const pdfmd = require('./pdfmd');
+const pdfimage = require('./pdfimage');
 
 const VDIR = path.join(__dirname, '..', 'vendor', 'pdfjs');
 const sl = (p) => p.replace(/\\/g, '/');                 // pdf.js 内部按 URL 拼，正斜杠最保险
@@ -58,6 +59,14 @@ function flatten(page, tc) {
 
 /** 主入口。buffer 与 filePath 二选一。
  *
+ *  `images` 是一个可选的回调：`(img, index) => tag|null`。给一张图（带 page / yTop /
+ *  data / ext），返回一个要插进正文的字符串（通常是 Hexo 的 asset_img 标签）；
+ *  返回 null 就跳过这张图。
+ *  **为什么用回调而不是把图直接返回给调用方**：图的落点（插在正文哪一行）只有
+ *  pdfmd 在还原版式时才知道，而文件名要先落盘才能定（资源名是内容哈希）。
+ *  回调让"写文件 + 定文件名"留在调用方（server.js 知道资源目录在哪），
+ *  "插在哪一行"留在 pdfmd —— 这一层只负责把两者接起来。
+ *
  *  外面这层只做一件事：把 pdf.js 的 console 噪音收起来。
  *  写作台的控制台窗口是给人看的，"translateFont failed" 或者 Node 里装不上 canvas 时
  *  那两条 "Cannot polyfill DOMMatrix" 刷上去就没法用了。
@@ -75,7 +84,7 @@ async function convert(opts) {
   }
 }
 
-async function convertInner({ buffer, filePath, title }, warnings) {
+async function convertInner({ buffer, filePath, title, images }, warnings) {
   const src = buffer ? new Uint8Array(buffer) : new Uint8Array(fs.readFileSync(filePath));
   const p = lib();
   let doc = null;
@@ -107,17 +116,43 @@ async function convertInner({ buffer, filePath, title }, warnings) {
     await tick();                                              // 让出事件循环
   }
 
-  /* 元数据里的标题作为兜底：Chromium 打印的 PDF 会把 <title> 写进 /Title。
-     还是以"版面里最大的那行"优先 —— 元数据的标题常常是网页标题，带站点后缀。 */
+  /* 元数据里的标题作为最后兜底：Chromium 打印的 PDF 会把 <title> 写进 /Title。 */
   let metaTitle = '';
   try {
     const meta = await doc.getMetadata();
     metaTitle = String((meta && meta.info && meta.info.Title) || '').trim();
   } catch { /* 没有就算了 */ }
+  /* 图片：位置/顺序问 pdf.js（它能把 Form、ExtGState 展平），字节自己解析
+     （pdf.js 在 Node 里取不到图，见 pdfimage.js 文件头）。
+     每张图交给调用方落盘并换回一个正文标签；单张失败不该毁掉整篇。 */
+  const imageTags = [];
+  if (typeof images === 'function') {
+    let imgs = [];
+    try {
+      imgs = await pdfimage.extract({
+        doc, pdfjs: p, buffer: Buffer.from(src.buffer, src.byteOffset, src.byteLength),
+      });
+    } catch { imgs = []; }                                        // 取不出图就当这份 PDF 没图
+    for (let i = 0; i < imgs.length; i++) {
+      try {
+        const tag = await images(imgs[i], i);
+        if (tag) imageTags.push({ page: imgs[i].page, yTop: imgs[i].yTop, tag });
+      } catch { /* 忽略这一张 */ }
+    }
+  }
+
   try { await doc.destroy(); } catch { /* 忽略 */ }
 
-  const r = pdfmd.toMarkdown(pages, { title: '' });
-  const finalTitle = (r.title || title || metaTitle || '').trim();
+  /* 标题的优先级：**调用方给的（前端给的就是文件名）> 版面 > 元数据**。
+   *
+   * 为什么把文件名顶到最前面：版面里"哪一行算标题"只能靠字号猜，长标题软换行、
+   * 副标题、页眉都会让它认错 —— 实测蓝鲸那篇一边把标题切成两半、一边又把正文里的
+   * 大标题弄丢。文件名是确定的，而且导入后本来就要自己改标题。
+   *
+   * 顺带一个好处：**给了标题就不再从正文里抽走任何行**，版面内容整篇进正文，
+   * 不会莫名少一段。 */
+  const r = pdfmd.toMarkdown(pages, { title: String(title || '').trim(), images: imageTags });
+  const finalTitle = (r.title || metaTitle || '').trim();
   return {
     title: finalTitle,
     markdown: r.markdown,

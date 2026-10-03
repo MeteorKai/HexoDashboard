@@ -485,9 +485,40 @@ const server = http.createServer(async (req,res)=>{
       /* 先看一眼魔数：用户选错文件（比如传了张图片）时给出人话提示，
          而不是把二进制丢给 pdf.js 之后抛一个 InvalidPDFException。 */
       if(buf.length<5||buf.slice(0,5).toString('latin1')!=='%PDF-')throw Object.assign(new Error('这不是 PDF 文件（文件头不是 %PDF-）'),{status:400});
-      const r=await pdfimport.convert({buffer:buf,title:url.searchParams.get('title')||''});
+      const qTitle=url.searchParams.get('title')||'',qDraft=url.searchParams.get('draft')==='1';
+      /* 单篇页（post.js）是把 PDF **插进现有文章**，所以它能给出明确的 post 名和
+         草稿位；首页（app.js）导入的是一篇新文章，只能给标题 —— 这时候资源目录名
+         由服务端按保存时的同一条规则算出来并回传。 */
+      const qPost=url.searchParams.get('post')||'';
+      const wantImages=url.searchParams.get('images')!=='0';
+      const assetFolder=!!lib.readSiteConfig(BLOG).postAssetFolder;
+      /* 图片要落进"文章同名资源目录"，而这个目录名必须和**保存时算出来的那个**一致，
+         否则一保存正文里的 asset_img 就全部找不到文件。保存走的是
+         `sanitizeName(f-name || title)`，所以这里用同一条规则算，并把名字回给前端
+         写进 f-name —— 用户改标题也不会换目录（f-name 优先于 title）。 */
+      let assetName='',assetDir=null;
+      const assetBase=qPost||qTitle,assetDraft=qPost?url.searchParams.get('draft')==='1':qDraft;
+      if(wantImages && assetFolder && assetBase) {
+        try { assetName=lib.sanitizeName(assetBase); assetDir=lib.resolveInside(lib.postDir(BLOG,assetDraft),assetName,''); }
+        catch { assetName=''; assetDir=null; }                  // 保留名之类的极端文件名就不带图了
+      }
+      let written=0;
+      const images=assetDir ? (async (im,i)=>{
+        const original=`pdf-第${im.page}页图${i+1}.${im.ext}`;   // 只用来生成 alt，文件名是内容哈希
+        const fileName=lib.assetName(im.data,original);
+        if(!fs.existsSync(assetDir))fs.mkdirSync(assetDir,{recursive:true});
+        const target=lib.resolveInside(assetDir,fileName,'');
+        if(!fs.existsSync(target))lib.atomicWrite(target,im.data);
+        written++;
+        return lib.assetTag(fileName,original);
+      }) : null;
+      const r=await pdfimport.convert({buffer:buf,title:qTitle,images});
       if(!r.markdown.trim())throw Object.assign(new Error('这份 PDF 里没有可提取的文字。如果它是扫描件或整页截图，需要先做 OCR 才能转成文字。'),{status:422});
-      return sendJSON(res,200,{ok:true,title:r.title,markdown:r.markdown,stats:r.stats});
+      /* assets 只回**目录名**（前端要拿它填 f-name，好让保存时算出的目录一致）。
+         服务端算出来的绝对路径（assetDir）**一个字都不往外吐** —— 那是本机内部结构，
+         前端也用不上，没有理由出现在响应里。 */
+      return sendJSON(res,200,{ok:true,title:r.title,markdown:r.markdown,stats:r.stats,
+        assets:assetName?{name:assetName,count:written,draft:assetDraft}:null,assetFolder});
     }
     if(p.startsWith('/media/') && req.method==='GET') {
       const seg=p.slice(7).split('/');const mode=seg.shift();

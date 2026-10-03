@@ -33,11 +33,26 @@
 //    所以先统计列线、再用列线认表格行。认出来之后每行**自己成一段**，绝不与上下文
 //    合并 —— 否则整张宽表会粘成一个巨型段落（那本手册最初的症状就是这样）。
 //
-// 7) **代码续行的判据是"断点不可能是行尾"，不是"上一行排满了"**。实测反例：
+// 7) **标题可能不止一行，抽标题必须向下吸收续行。** PDF 里标题太长会软换行，
+//    只取第一行的话：前半截进了 front-matter 的 title，后半截留在正文里 —— 它字号
+//    同样是最大档，于是被判成正文里的 `## …`。实测蓝鲸那篇就是这样：
+//      title    = 「记一次蓝鲸智云容器管理平台(BlueKing Container Service)」
+//      正文首行 = 「## 的代码审计」
+//    吸收的判据是"同字号 + 行距紧凑 + 上一行没有收尾"，细节见 headContinues。
+//    同一套判据**也用在正文里的标题上**：导入时标题用文件名（见 pdfimport.js），
+//    版面里的大标题整篇留在正文，不合并的话那行长标题就会变成两个 `##`。
+//
+// 8) **代码续行的判据是"断点不可能是行尾"，不是"上一行排满了"**。实测反例：
 //    某 PDF 里三条独立的 shell 命令（`openssl x509 …` / `openssl x509 …` / `mv …`）
 //    都以同一个 x 起头，其中前两条正好排满整行 —— 按"排满了就并"会把三条粘成一条。
 //    反过来，"上一行以 `,([{=+…` 收尾 / 这一行以 `)]},;` 起头"才是真的被折断。
 //    所以**默认不合并**，只在有正向证据时才合并。
+//
+// 9) **图片只能"按版面位置"插，不能堆在文末。** 传进来的每张图带着"第几页、
+//    离页顶多远"（pdfimage.js 从 pdf.js 的 operator list 里量出来的），主循环按
+//    页号 + yTop 顺序往下走，遇到"这张图在这行文字上面"就把图插在这行之前。
+//    图插进去之前**必须先 flush 段落/代码/表格** —— 否则图会被塞进一个 paragraph
+//    中间，markdown 里就变成"一段文字里夹一行 asset_img"。
 'use strict';
 
 /* ── 部首 → 等价汉字 ────────────────────────────────────────────────────
@@ -305,11 +320,15 @@ function listInfo(text) {
 }
 
 const TERMINAL = /[。！？；.!?;：:”"』」）)]$/;
+/* 判"这句话已经说完了"时**不能用 TERMINAL**：它含 `)` `）`，而标题以括号收尾
+   太常见（`…(BlueKing Container Service)`、`…（上）`）。拿它去拦标题续行，
+   正好又把那种标题切回两半 —— 所以标题那边用这个去掉括号的版本。 */
+const SENT_END = /[。！？；.!?;：:”"』」]$/;
 const NO_HEAD_TAIL = /[，,、；;：:。.]$/;                 // 以这些收尾的多半不是标题
 const OPEN_TAIL = /[([{<]$/;
 const CLOSE_HEAD = /^[)\]},;.>]/;
 
-/* 代码续行的**正向**证据（见文件头第 7 条）：默认不合并，只有这几条命中才并。
+/* 代码续行的**正向**证据（见文件头第 8 条）：默认不合并，只有这几条命中才并。
  * 反过来用（"上一行没排满就说明断了"）会在 shell 命令上翻车。
  * 字符集里**故意不放 `/` `*` `?` `:`** —— 它们出现在 shell 行尾太正常了
  * （`cp a /b/`、`rm *`），放进来会把两条独立命令粘起来（实测踩过）。 */
@@ -343,17 +362,37 @@ function tightenItem(it) {
 
 /* ── 四、主流程 ───────────────────────────────────────────────────────── */
 function toMarkdown(pages, options) {
-  const opt = Object.assign({ title: '' }, options || {});
-  const stats = { pages: pages.length, lines: 0, chars: 0, headings: 0, lists: 0, codeBlocks: 0, dropped: 0, kangxi: 0 };
+  const opt = Object.assign({ title: '', images: [] }, options || {});
+  const stats = { pages: pages.length, lines: 0, chars: 0, headings: 0, lists: 0, codeBlocks: 0, dropped: 0, kangxi: 0, images: 0 };
 
   const all = [];
   for (const p of pages) all.push(...buildLines(p));
   const { lines, dropped } = stripRunningHeads(all, pages.length);
   stats.dropped = dropped;
   stats.lines = lines.length;
-  if (!lines.length) return { title: normalizeKangxi(opt.title || '')[0], markdown: '', stats };
+  /* 待插入的图片，按"页 → 纵向位置"排好；主循环边走边把这些图插到对应文字前面。
+     一份 PDF 一张图都没有时这就是个空数组，下面的代码一行都不多跑。 */
+  const pending = (Array.isArray(opt.images) ? opt.images.slice() : [])
+    .filter((im) => im && im.tag)
+    .sort((a, b) => (a.page - b.page) || (a.yTop - b.yTop));
+  if (!lines.length) {
+    /* 整份 PDF 没有可提取文字（扫描件）：图还是得出来，按顺序排在末尾。 */
+    for (const im of pending) stats.images++;
+    const only = pending.map((im) => im.tag).join('\n\n');
+    return { title: normalizeKangxi(opt.title || '')[0], markdown: only ? only + '\n' : '', stats };
+  }
 
   const bodySize = bodySizeOf(lines);
+
+  /* 右边界：用来判断"这一行排没排满"。**只取正文字号的行** —— 标题行自己常常就是
+     最宽的那行，把它算进来右边界会被它自己顶上去，判据就成了永远成立。 */
+  const rightEdge = (() => {
+    let m = 0;
+    for (const L of lines) if (Math.abs(L.size - bodySize) <= 0.6) m = Math.max(m, L.xEnd || 0);
+    if (m) return m;                                    // 没有正文行时退回"全文最宽的那行"
+    for (const L of lines) m = Math.max(m, L.xEnd || 0);
+    return m;
+  })();
 
   /* 左边界：正文最常见的起始 x。首行缩进判断靠它。 */
   const leftX = (() => {
@@ -383,10 +422,17 @@ function toMarkdown(pages, options) {
   /* 标题字号分档：比正文大 10% 以上才算标题，从大到小依次对应 # ## ### #### */
   const headSizes = [...new Set(lines.map((L) => q(L.size)).filter((s) => s >= bodySize * 1.1))].sort((a, b) => b - a);
 
-  /* 标题先行抽取：第 1 页靠上、字号最大的那行。抽到之后正文里的标题要整体降一级
-     （H1 留给 front-matter 的 title），并且开头的重复 H1 要删掉。 */
-  const firstPageHeads = lines.filter((L) => L.page === 1 && L.yTop < L.height * 0.4 && q(L.size) === headSizes[0]);
-  let title = opt.title || (firstPageHeads.length ? firstPageHeads[0].text : '');
+  /* 标题先行抽取：第 1 页靠上、字号最大的那块（可能连续几行，见文件头第 7 条）。
+     抽到之后正文里的标题要整体降一级（H1 留给 front-matter 的 title），
+     并且开头的重复 H1 要删掉。
+     titleLines 里的行**正文里不再出现** —— 它们已经变成 front-matter 的 title 了。 */
+  let title = String(opt.title || '').trim();
+  const titleLines = new Set();
+  if (!title && headSizes.length) {
+    const picked = pickTitle(lines, headSizes[0], rightEdge);
+    title = picked.title;
+    for (const L of picked.lines) titleLines.add(L);
+  }
   const shift = title ? 1 : 0;
 
   /* 列表缩进层级：把列表行的 x 聚成几档 */
@@ -435,6 +481,8 @@ function toMarkdown(pages, options) {
 
   const out = [];
   let para = [], codeRun = [], listOpen = false, lastEmitted = null;
+  /* 上一个发出去的标题（行对象 + 级别 + 已拼好的文字），用来接软换行的下一截。 */
+  let lastHeading = null;
 
   const flushPara = () => {
     if (!para.length) return;
@@ -509,12 +557,29 @@ function toMarkdown(pages, options) {
   for (let i = 0; i < lines.length; i++) {
     const L = lines[i], prev = lines[i - 1];
 
-    if (isCode(L)) { flushPara(); flushRow(); listOpen = false; codeRun.push(L); continue; }
+    /* 图片：凡是"排在当前这行文字上面"的图，都插在这行之前（见文件头第 9 条）。
+       三步不能省：① flushCode 之后还要 flushPara —— 单行小字号会被交回正文流，
+       只 flush 代码的话那行会跑到图**后面**去；② 插完要把 lastEmitted / lastHeading
+       清掉，否则后面的正文会被当成"这段的续行"接到图上；③ 用 while 不是 if，
+       同一行文字上面可能压着两张图（上下排的两个截图）。 */
+    while (pending.length && (pending[0].page < L.page || (pending[0].page === L.page && pending[0].yTop <= L.yTop))) {
+      flushCode(); flushPara(); flushRow();
+      out.push(pending[0].tag);
+      lastEmitted = null; lastHeading = null; listOpen = false;
+      stats.images++;
+      pending.shift();
+    }
+
+    /* 标题的一部分：已经抽去当 front-matter 的 title 了，正文里不该再出现。
+       不跳的话，被切下来的后半截会以最大字号独立成行、被判成正文里的 `## …`。 */
+    if (titleLines.has(L)) continue;
+
+    if (isCode(L)) { flushPara(); flushRow(); listOpen = false; lastHeading = null; codeRun.push(L); continue; }
     flushCode();
 
     /* 表格行自己成一行，**绝不与上下文合并** —— 否则整张宽表会粘成一个巨型段落。 */
     if (isTable(L)) {
-      flushPara(); flushRow(); listOpen = false;
+      flushPara(); flushRow(); listOpen = false; lastHeading = null;
       trow = { page: L.page, yTop: L.yTop, cells: L.cells.map((c) => ({ x: c.x, text: c.text })) };
       continue;
     }
@@ -531,6 +596,7 @@ function toMarkdown(pages, options) {
       else out.push(`${pad}- ${li.body}`);
       stats.lists++;
       listOpen = true;
+      lastHeading = null;
       lastEmitted = null;                                 // 列表项后面不接"折行续上"的活
       continue;
     }
@@ -538,8 +604,19 @@ function toMarkdown(pages, options) {
     const hl = hlLevel(L, headSizes, bodySize, shift);
     if (hl) {
       flushPara(); listOpen = false;
-      out.push('#'.repeat(hl) + ' ' + L.text.replace(/\s+$/, ''));
-      stats.headings++;
+      /* 软换行的标题要接回上一行。不接的话，一行长标题在正文里会变成**两个 `##`**
+         —— 标题来自文件名时（现在默认就是这样）这半截标题就明晃晃留在正文里了。 */
+      if (lastHeading && lastHeading.level === hl && headContinues(lastHeading.line, L, rightEdge) &&
+          lastHeading.text.length + L.text.length <= 120) {
+        lastHeading.text = joinTwo(lastHeading.text, L.text);
+        lastHeading.line = L;
+        out[out.length - 1] = '#'.repeat(hl) + ' ' + lastHeading.text;
+      } else {
+        const text = L.text.replace(/\s+$/, '');
+        out.push('#'.repeat(hl) + ' ' + text);
+        stats.headings++;
+        lastHeading = { level: hl, line: L, text };
+      }
       lastEmitted = null;                                 // 标题后面同理，不能把正文并进标题
       continue;
     }
@@ -572,8 +649,11 @@ function toMarkdown(pages, options) {
     }
     if (newPara) flushPara();
     para.push(L);
+    lastHeading = null;                                   // 中间夹了正文，标题就不连续了
   }
   flushCode(); flushRow(); flushPara();
+  /* 剩下的图：压在最后一页文字下方的，或者整页只有图没有文字的 —— 按原顺序排文末。 */
+  for (const im of pending) { out.push(im.tag); stats.images++; }
 
   /* 开头的重复 H1（标题已经单独抽出来了）删掉，别让 md 一上来就重复一遍。
      注意要**同时把统计里的标题数减回去** —— 这一行是先当标题发出去、再被删掉的，
@@ -589,6 +669,67 @@ function toMarkdown(pages, options) {
   stats.kangxi = kn;
   stats.chars = countChars(clean);
   return { title: normalizeKangxi(String(title).trim())[0], markdown: clean, stats };
+}
+
+/** 抽文档标题：第 1 页靠上、字号最大的那一块，**并且向下吸收它的续行**。
+ *
+ *  为什么必须吸收（文件头第 7 条）：PDF 里长标题会软换行，只取第一行就会把标题
+ *  切成两半 —— 前半进 front-matter，后半留在正文里当 `## …`。
+ *
+ *  四个中止条件各有来头：
+ *   - 换了页：标题不会跨页；
+ *   - 字号差 >0.5：那是另一级（副标题、小标题），不是同一行标题的续行；
+ *   - 行距 >1.8 倍字号：标题换行最多 1.2~1.5 倍，再宽就是另起一块；
+ *   - 上一行已经收尾（SENT_END）：说明它说完了，后面不是它的续行。
+ *     这里**刻意不用 TERMINAL** —— 它含 `)`，而标题以括号收尾很常见，
+ *     用 TERMINAL 会把 `…(BlueKing Container Service)` 的续行拒掉，白修。
+ *   - 累计 >120 字：兜底，免得极端版式下把整段同字号正文吸进来。
+ */
+/** `L` 是不是 `last` 那行标题**软换行的下一截**。抽 title 和正文里合标题共用这一套。
+ *
+ *  三条判据各有来头：
+ *   - 换页 → 不是（标题不会跨页）；
+ *   - 字号差 >0.5 → 那是另一级（副标题、小标题）；
+ *   - 行距 >1.8 倍字号 → 标题换行最多 1.2~1.5 倍，再宽就是另起一块；
+ *   - 上一行已经收尾（SENT_END）→ 它说完了，后面不是它的续行。
+ *     这里**刻意不用 TERMINAL**：它含 `)`，而标题以括号收尾很常见
+ *     （`…(BlueKing Container Service)`），用 TERMINAL 会把这种续行拒掉。 */
+function headContinues(last, L, rightEdge) {
+  if (!last || L.page !== last.page) return false;
+  if (Math.abs(q(L.size) - q(last.size)) > 0.5) return false;
+  const gap = L.yTop - last.yTop;
+  if (gap <= 0 || gap > last.size * 1.8) return false;
+  if (SENT_END.test(last.text)) return false;
+  /* **上一行必须排满**，下一截才可能是被折断的 —— 标题折行是因为写不下了。
+     上一行明明没排满、下面却还跟着一行同字号的，那是另一个标题（副标题）。
+     实测蓝鲸那篇第 1 页（正文右边界 557.2）：
+        主标题首行 xEnd 547.1（排满）→ 下一行「的代码审计」是它的续行；
+        「的代码审计」xEnd 146.2（远没排满）→ 再下面「未认证 kubeconfig 校验 →
+        服务端 RCE」是独立标题。不看排没排满，三行会被并成一句
+        「…的代码审计未认证 kubeconfig 校验 → 服务端 RCE」。
+     注意这跟代码那边**方向相反**（代码是"排满了也不能并"，见文件头第 8 条）：
+     代码里三条独立命令常常正好都排满，标题这边则是排满才说明话没说完。 */
+  if (rightEdge > 0 && last.xEnd != null && last.xEnd < rightEdge - 1.5 * last.size) return false;
+  return true;
+}
+
+function pickTitle(lines, topSize, rightEdge) {
+  const first = lines.find((L) => L.page === 1 && L.yTop < L.height * 0.4 && Math.abs(q(L.size) - topSize) <= 0.5);
+  if (!first) return { title: '', lines: [] };
+  const picked = [first];
+  let len = first.text.length;
+  /* 从首行在全文里的位置往下扫，而**不是在"页面上部"这个子集里扫**：
+     长标题折三行时第三行常常已经越过 40% 那条线，按子集扫就又把标题切一半。 */
+  for (let i = lines.indexOf(first) + 1; i < lines.length; i++) {
+    const L = lines[i], last = picked[picked.length - 1];
+    if (!headContinues(last, L, rightEdge)) break;
+    if (len + L.text.length > 120) break;
+    picked.push(L);
+    len += L.text.length;
+  }
+  let title = picked[0].text;
+  for (let i = 1; i < picked.length; i++) title = joinTwo(title, picked[i].text);
+  return { title: title.replace(/\s+$/, ''), lines: picked };
 }
 
 /** 行 → 标题级别。字号够大、够短、不以逗号收尾，三者都满足才算标题。 */

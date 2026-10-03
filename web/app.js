@@ -1534,7 +1534,20 @@
        * 解析在服务端（/api/import-pdf），拿回来的就是现成的 markdown。
        * 它会**覆盖整个编辑区**，所以编辑区里已经有东西时先问一句；
        * 默认勾上"存为草稿" —— PDF 抽出来的文字几乎不可能直接能发，
-       * 落成草稿既不会误发布，又能让列表里一眼看见。 */
+       * 落成草稿既不会误发布，又能让列表里一眼看见。
+       *
+       * 标题**就用文件名**：版面里"哪一行算标题"只能靠字号猜，长标题软换行、
+       * 副标题、页眉都会让它认错（实测把标题切成两半、又弄丢过正文里的大标题）。
+       * 所以把文件名通过 ?title= 交给服务端，服务端优先用它、并且不再从正文
+       * 里抽走任何一行 —— 版面内容整篇进正文。文件名不合适就在标题框里改。
+       *
+       * 图：PDF 里真正画在页面上的截图会由服务端取出来、存进**文章同名资源目录**，
+       * 正文里写 Hexo 原生 {% asset_img %}。两件事必须在这里对齐：
+       *   ① ?draft=1（下面默认勾了"存为草稿"，服务端就得把图放进 _drafts，
+       *      否则发布时 Hexo 找不到图片）；
+       *   ② 资源目录名 = 保存时的文件名（lib.sanitizeName(f-name || title)），
+       *      所以服务端把算好的名字回传，这里写进 f-name —— 之后在标题框里改标题
+       *      也不会换目录（f-name 优先于 title），图片不会失联。 */
       importPdf: async (file) => {
         if (state.dirty || $('body').value.trim()) {
           if (!confirm('导入会把编辑区换成这份 PDF 的内容。\n\n当前编辑区里的内容（未保存的部分只在本机缓存里）会被替换掉。继续吗？')) {
@@ -1542,20 +1555,28 @@
           }
         }
         const buf = await file.arrayBuffer();
-        const r = await api('/api/import-pdf?title=' + encodeURIComponent(file.name.replace(/\.pdf$/i, '')), {
+        const base = file.name.replace(/\.pdf$/i, '');
+        const r = await api('/api/import-pdf?title=' + encodeURIComponent(base) + '&draft=1', {
           method: 'POST',
           headers: { 'Content-Type': 'application/pdf' },
           body: buf,
         });
         newPost(false);
-        $('f-title').value = (r.title || '').trim() || file.name.replace(/\.pdf$/i, '');
+        $('f-title').value = (r.title || '').trim() || base;
         $('f-draft').checked = true;
+        /* f-name 是保存时的**文件名**，也决定资源目录名：用服务端回传的那个，
+           保证"图放在哪"和"保存到哪"是同一个目录。 */
+        $('f-name').value = (r.assets && r.assets.name) || '';
         $('body').value = r.markdown;
         refreshFieldSummary();
         markDirty();
         window.Editor.render();
         updateStats();
-        return { stats: r.stats, hint: '已存为草稿待你确认' };
+        const n = (r.assets && r.assets.count) || 0;
+        const hint = n ? `已存为草稿，并取出 ${n} 张图放在同名资源目录里`
+          : (r.assetFolder === false ? '已存为草稿（博客没开 post_asset_folder，图片不能存进文章目录）'
+            : '已存为草稿待你确认');
+        return { stats: r.stats, hint };
       },
     });
     window.Editor.render();

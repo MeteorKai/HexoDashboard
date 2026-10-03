@@ -355,15 +355,29 @@ let slog = ''; srv.stdout.on('data', (c) => slog += c); srv.stderr.on('data', (c
   const ij2 = j(im);
   check(im.code === 200 && ij2.ok === true, '导入成功返回 200 + ok', im.code + ' ' + JSON.stringify(ij2).slice(0, 140));
   check(/Hello PDF import/.test(ij2.markdown || ''), 'PDF 里的文字被抽出来了', JSON.stringify((ij2.markdown || '').slice(0, 60)));
-  check(ij2.title === '导入的稿子', '版面里没有标题时用 ?title= 兜底', ij2.title);
+  /* 标题**优先**用 ?title=（前端传的就是文件名），不再靠字号猜版面里哪行是标题 ——
+     版面猜测认错过两次：一次把长标题切成两半，一次把正文里的大标题弄丢。 */
+  check(ij2.title === '导入的稿子', '标题优先取 ?title=（前端传文件名）', ij2.title);
+  /* 给了标题就不能再从正文里抽走任何行：版面内容整篇进正文 */
+  check(/Hello PDF import/.test(ij2.markdown || ''), '给了标题时版面文字一行不删（不会被当成标题抽走）',
+    JSON.stringify((ij2.markdown || '').slice(0, 60)));
   check(ij2.stats && ij2.stats.pages === 1 && ij2.stats.lines === 1, 'stats 如实报告页数/行数', JSON.stringify(ij2.stats));
   check(typeof ij2.markdown === 'string' && ij2.markdown.endsWith('\n'), 'markdown 以换行收尾（填进正文不会和下文粘行）');
   const afterFiles = [...fs.readdirSync(POSTS_DIR), ...fs.readdirSync(path.join(BLOG, 'source', '_drafts'))].sort().join('|');
   check(beforeFiles === afterFiles, '导入只做转换，不往博客里写任何文件', afterFiles);
-  /* 返回的字段要够前端落地用，但不能多吐内部路径 */
+  /* 返回的字段要够前端落地用，但不能多吐内部路径。
+     判据是"**落盘位置**"本身，不是把整个响应转成 JSON 再找反斜杠 ——
+     后者有 bug 且已经踩到：`JSON.stringify` 会把每个反斜杠转义成两个，
+     于是 `/\\\\\\\\|\\/[A-Za-z]:\\//`（四个反斜杠）匹配的是**单个**反斜杠，
+     连 `"yes\\u2192no"` 这种 JSON 转义都会被误判成"吐了本机路径"。
+     这里换成看三个真正该说的字段：assets.dir（服务端自己算的绝对路径）、
+     url（站内相对链接）、name（目录名，不含斜杠）。 */
   check(ij2.stats && typeof ij2.stats.kangxi === 'number' && typeof ij2.stats.codeBlocks === 'number',
     'stats 里带着前端提示要用的 kangxi / codeBlocks', JSON.stringify(ij2.stats));
-  check(!/\\\\|\/[A-Za-z]:\//.test(JSON.stringify(ij2)), '响应里不吐本机绝对路径');
+  check(ij2.assets && ij2.assets.name && !/[\\/]/.test(String(ij2.assets.name)),
+    'assets 回传的目录名是**目录名**，不是路径', String(ij2.assets && ij2.assets.name));
+  check(ij2.assets && !('dir' in ij2.assets) && !/[A-Za-z]:[\\/]/.test(JSON.stringify(ij2.assets)),
+    'assets 里不带本机绝对路径（前端只要目录名）', JSON.stringify(ij2.assets));
 
   log('');
   log('== 18. 关闭服务（前端「关闭服务」按钮走的接口）==');
