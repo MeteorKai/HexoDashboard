@@ -60,7 +60,7 @@ const keysSrc = fs.readFileSync(path.join(WEB, 'mdkeys.js'), 'utf8');
 const STATIC = new Map([...srv.matchAll(/\['(\/[^']*)','([^']+)'\]/g)].map((m) => [m[1], m[2]]));
 
 log('== 1. 语法编译 ==');
-for (const f of ['web/theme.js', 'web/editor.js', 'web/app.js', 'web/post.js', 'src/pdfmd.js', 'src/pdfimport.js', 'src/mdimport.js']) {
+for (const f of ['web/theme.js', 'web/editor.js', 'web/app.js', 'web/post.js', 'src/pdfmd.js', 'src/pdfimport.js', 'src/mdimport.js', 'src/pages.js']) {
   try { new vm.Script(fs.readFileSync(path.join(ROOT, f), 'utf8'), { filename: f }); log('  PASS  ' + f + ' 语法正确'); }
   catch (e) { fail++; log('  FAIL  ' + f + ' → ' + e.message); }
 }
@@ -609,9 +609,9 @@ log('');
 log('== 13. 便携包目录布局 ==');
 /* 这一组防的是"重构把某处引用留在老位置"——静态检查里少见的、只有真跑才会炸的类目。
    每条都对着一个具体的失败后果，不是为了凑数。 */
-const srvFiles = ['server.js', 'lib.js', 'storage.js', 'frontmatter.js', 'pdfimport.js', 'pdfmd.js', 'mdimport.js'];
+const srvFiles = ['server.js', 'lib.js', 'storage.js', 'frontmatter.js', 'pdfimport.js', 'pdfmd.js', 'mdimport.js', 'pages.js'];
 const webFiles = ['index.html', 'app.js', 'post.html', 'post.js', 'preview.html', 'preview.js', 'editor.js', 'theme.js', 'styles.css'];
-ok(srvFiles.every((f) => fs.existsSync(path.join(SRC, f))), 'src/ 下 7 个服务端文件齐', srvFiles.filter((f) => !fs.existsSync(path.join(SRC, f))).join(','));
+ok(srvFiles.every((f) => fs.existsSync(path.join(SRC, f))), 'src/ 下 8 个服务端文件齐', srvFiles.filter((f) => !fs.existsSync(path.join(SRC, f))).join(','));
 ok(webFiles.every((f) => fs.existsSync(path.join(WEB, f))), 'web/ 下 9 个前端文件齐', webFiles.filter((f) => !fs.existsSync(path.join(WEB, f))).join(','));
 ok(fs.existsSync(path.join(ROOT, 'vendor', 'pdfjs', 'pdf.js')), 'vendor/ 留在应用根（不属于 src/ 也不属于 web/）');
 const rootJunk = fs.readdirSync(ROOT).filter((f) => /^\.(server|hexo-serve|hexo-tool)-/.test(f));

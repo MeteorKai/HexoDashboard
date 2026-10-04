@@ -1218,6 +1218,82 @@
     } catch { /* 拉不到就算了 */ }
   }
 
+  /* ── 独立页面与主题数据 ────────────────────────────────────────────────── */
+  let page = null, pageBusy = false, pageRequest = 0;
+  const pageDirty = () => !!page && $('pageContent').value !== page.content;
+  const discardPage = () => !pageDirty() || confirm('页面文件有未保存的修改，确定放弃吗？');
+  function syncPageControls() {
+    $('pageFile').disabled = pageBusy || !$('pageFile').options.length;
+    $('pageContent').disabled = pageBusy || !page;
+    $('btnReloadPage').disabled = pageBusy || !$('pageFile').value;
+    $('btnSavePage').disabled = pageBusy || !pageDirty();
+    $('btnClosePages').disabled = pageBusy;
+  }
+  function closePages() {
+    if (pageBusy || !discardPage()) return;
+    pageRequest++;
+    page = null;
+    $('pagesModal').classList.remove('show');
+  }
+  async function loadPage(name) {
+    const request = ++pageRequest;
+    pageBusy = true;
+    page = null;
+    $('pageContent').value = '';
+    $('pageNote').textContent = '正在读取页面文件…';
+    syncPageControls();
+    try {
+      const r = await api('/api/page?name=' + encodeURIComponent(name));
+      if (request !== pageRequest) return;
+      $('pageContent').value = r.content;
+      page = { ...r, content: $('pageContent').value };
+      $('pageNote').textContent = '当前文件：source/' + r.name + '。保存前校验 YAML，并备份原文件。';
+    } catch (e) {
+      if (request === pageRequest) $('pageNote').textContent = '读取失败：' + e.message;
+    } finally {
+      if (request === pageRequest) { pageBusy = false; syncPageControls(); }
+    }
+  }
+  async function openPages() {
+    if (pageBusy || !discardPage()) return;
+    const request = ++pageRequest;
+    pageBusy = true;
+    page = null;
+    $('pageFile').replaceChildren();
+    $('pageContent').value = '';
+    $('pageNote').textContent = '正在读取独立页面与数据文件…';
+    $('pagesModal').classList.add('show');
+    syncPageControls();
+    try {
+      const r = await api('/api/pages');
+      if (request !== pageRequest) return;
+      for (const file of r.files) $('pageFile').add(new Option((file.kind === 'data' ? '数据：' : '页面：') + file.name, file.name));
+      if (r.files.length) await loadPage(r.files[0].name);
+      else $('pageNote').textContent = '没有找到独立页面或 YAML 数据文件。可编辑的文件位于 source 下，不包含 _posts、_drafts 和隐藏目录。';
+    } catch (e) {
+      if (request === pageRequest) $('pageNote').textContent = '读取失败：' + e.message;
+    } finally {
+      if (request === pageRequest) { pageBusy = false; syncPageControls(); }
+    }
+  }
+  async function savePage() {
+    if (pageBusy || !pageDirty()) return;
+    const request = ++pageRequest;
+    pageBusy = true;
+    syncPageControls();
+    try {
+      const r = await postJSON('/api/page', { blog: page.blog, name: page.name, revision: page.revision, content: $('pageContent').value });
+      if (request !== pageRequest) return;
+      $('pageContent').value = r.content;
+      page = { ...r, content: $('pageContent').value };
+      $('pageNote').textContent = '已保存 source/' + r.name + '。原文件备份：' + r.backup + '。请编译站点使修改生效。';
+    } catch (e) {
+      if (request === pageRequest) $('pageNote').textContent = '保存失败：' + e.message;
+    } finally {
+      if (request === pageRequest) { pageBusy = false; syncPageControls(); }
+    }
+  }
+
   /* ── 设置 ─────────────────────────────────────────────────────────────── */
   let configRequest = 0, configBusy = false;
   const configDirty = () => !!state.config && $('s-config-content').value !== state.config.content;
@@ -1370,17 +1446,26 @@
     $('btnCloseHist').addEventListener('click', () => $('histModal').classList.remove('show'));
     $('btnCloseAssets').addEventListener('click', () => $('assetsModal').classList.remove('show'));
     $('btnCloseSettings').addEventListener('click', closeSettings);
+    $('btnPages').addEventListener('click', openPages);
+    $('btnClosePages').addEventListener('click', closePages);
+    $('pageContent').addEventListener('input', syncPageControls);
+    $('pageFile').addEventListener('change', () => {
+      if (!discardPage()) { $('pageFile').value = page.name; return; }
+      loadPage($('pageFile').value);
+    });
+    $('btnReloadPage').addEventListener('click', () => { if (discardPage()) loadPage($('pageFile').value); });
+    $('btnSavePage').addEventListener('click', savePage);
     $('btnCheckUpdate').addEventListener('click', () => {
       window.open('https://github.com/MeteorKai/HexoDashboard', '_blank', 'noopener,noreferrer');
     });
-    for (const id of ['trashModal', 'histModal', 'assetsModal', 'settingsModal']) {
-      $(id).addEventListener('click', (e) => { if (e.target === $(id)) { if (id === 'settingsModal') closeSettings(); else $(id).classList.remove('show'); } });
+    for (const id of ['trashModal', 'histModal', 'assetsModal', 'settingsModal', 'pagesModal']) {
+      $(id).addEventListener('click', (e) => { if (e.target === $(id)) { if (id === 'settingsModal') closeSettings(); else if (id === 'pagesModal') closePages(); else $(id).classList.remove('show'); } });
     }
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
       let hadModal = false;
-      for (const id of ['trashModal', 'histModal', 'assetsModal', 'settingsModal']) {
-        if ($(id).classList.contains('show')) { if (id === 'settingsModal') closeSettings(); else $(id).classList.remove('show'); hadModal = true; }
+      for (const id of ['trashModal', 'histModal', 'assetsModal', 'settingsModal', 'pagesModal']) {
+        if ($(id).classList.contains('show')) { if (id === 'settingsModal') closeSettings(); else if (id === 'pagesModal') closePages(); else $(id).classList.remove('show'); hadModal = true; }
       }
       closeCtxMenu();
       /* 没有弹窗可关时，Esc 用来还原被放大的编译窗口 */
@@ -1521,6 +1606,7 @@
       clearTimeout(timer);
       disarm();
       if (state.dirty && $('f-title').value.trim() && !confirm('有未保存的改动，仍要关闭吗？\n（内容已存在本机缓存，下次打开这篇文章时会提示恢复）')) return;
+      if (!discardPage()) return;
       btn.disabled = true;
       try {
         const r = await postJSON('/api/shutdown', {});
@@ -1539,6 +1625,7 @@
     document.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
+        if ($('pagesModal').classList.contains('show')) { savePage(); return; }
         if ($('settingsModal').classList.contains('show')) {
           if (e.target === $('s-config-content')) $('btnSaveConfig').click();
           return;
@@ -1549,7 +1636,7 @@
     window.addEventListener('beforeunload', (e) => {
       if (state.closing) return;        // 主动关闭：别再拦一道"确定要离开吗"
       cacheFlush();
-      if (configDirty() || (state.dirty && $('f-title').value.trim())) { e.preventDefault(); e.returnValue = ''; }
+      if (pageDirty() || configDirty() || (state.dirty && $('f-title').value.trim())) { e.preventDefault(); e.returnValue = ''; }
     });
     /* 页面隐藏时立刻落一次缓存，别等防抖 */
     document.addEventListener('visibilitychange', () => {

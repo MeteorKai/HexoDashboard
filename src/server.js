@@ -9,6 +9,7 @@ const { spawn, spawnSync } = require('child_process');
 const lib = require('./lib');
 const pdfimport = require('./pdfimport');   // 只在 /api/import-pdf 用到；pdf.js 本体是惰性加载的
 const mdimport = require('./mdimport');     // /api/import-md：Markdown 导入与 multipart 解析
+const pages = require('./pages');           // 独立页面与主题数据
 const crypto = require('crypto');
 const net = require('net');
 
@@ -558,6 +559,14 @@ const server = http.createServer(async (req,res)=>{
       return sendJSON(res,200,{ok:true,...next,restartRequired:next.toolPort!==PORT});
     }
     if(!BLOG && ((p.startsWith('/api/') && p!=='/api/shutdown') || p.startsWith('/media/')))throw Object.assign(new Error('请先在网页「设置」中选择博客目录'),{status:409});
+    if(p==='/api/pages' && req.method==='GET')return sendJSON(res,200,{ok:true,blog:BLOG,files:pages.listPages(BLOG)});
+    if(p==='/api/page' && req.method==='GET')return sendJSON(res,200,{ok:true,blog:BLOG,...pages.readPage(BLOG,url.searchParams.get('name'))});
+    if(p==='/api/page' && req.method==='POST') {
+      const data=await readJSONBody(req);
+      if(runningJobs().some(j=>!j.long))throw Object.assign(new Error('生成或部署过程中暂不能修改页面，请稍后保存'),{status:409});
+      if(data.blog!==BLOG)throw Object.assign(new Error('博客目录已切换，请重新打开页面文件'),{status:409});
+      return sendJSON(res,200,{ok:true,blog:BLOG,...pages.writePage(BLOG,data.name,data.content,data.revision)});
+    }
     if(p==='/api/configs' && req.method==='GET')return sendJSON(res,200,{ok:true,blog:BLOG,files:lib.listConfigFiles(BLOG)});
     if(p==='/api/config' && req.method==='GET')return sendJSON(res,200,{ok:true,blog:BLOG,...lib.readConfig(BLOG,url.searchParams.get('name'))});
     if(p==='/api/config' && req.method==='POST') {

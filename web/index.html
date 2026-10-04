@@ -32,6 +32,7 @@
       <a id="serveLink" class="serve-link" target="_blank" rel="noreferrer" hidden></a>
       <button id="btnTrash" class="ghost icon" aria-label="回收站" title="回收站：删除的文章在这里，可恢复"><svg class="ui-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6m4-6v6"/></svg><span id="trashCount"></span></button>
       <button id="btnTheme" class="ghost icon" aria-label="切换浅色或深色主题" title="切换浅色 / 深色">◐</button>
+      <button id="btnPages" class="ghost sm" title="编辑 About、友链、分类等独立页面及 YAML 数据">页面管理</button>
       <button id="btnSettings" class="ghost icon" aria-label="设置" title="设置：博客目录与端口"><svg class="ui-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16M8 4v6m8 4v6"/></svg></button>
       <button id="btnShutdown" class="danger sm" title="退出写作台服务，本地预览也会一起停">关闭服务</button>
     </div>
@@ -216,6 +217,23 @@
       <h3 id="archivedTitle" style="font-size:13px;color:var(--text-3);margin:20px 0 8px" hidden>已删除的图片</h3>
       <div class="grid-cards" id="assetsArchived"></div>
     </div>
+  </div>
+</div>
+
+<div class="modal" id="pagesModal" role="dialog" aria-modal="true" aria-labelledby="pagesTitle">
+  <div class="box" style="width:min(900px,94vw)">
+    <header><h2 id="pagesTitle">页面管理</h2><div class="spacer"></div><button id="btnClosePages" class="sm">关闭</button></header>
+    <div class="body config-editor">
+      <div class="config-toolbar">
+        <label for="pageFile">页面 / 数据文件</label>
+        <select id="pageFile" aria-label="选择独立页面或数据文件"></select>
+        <button id="btnReloadPage" class="sm">重新读取</button>
+      </div>
+      <p class="note">编辑 source 下的 Markdown 页面（包括标题、layout 等 Front-matter）。友链列表通常在 _data/links.yml 中；该 YAML 数据也可在此编辑。保存后请编译站点，主题数据修改后可能需要重启本地预览。</p>
+      <div class="note" id="pageNote" role="status"></div>
+      <textarea id="pageContent" aria-label="页面源文件内容" spellcheck="false" wrap="off"></textarea>
+    </div>
+    <div class="foot"><button id="btnSavePage" class="primary">保存页面文件 <kbd>Ctrl S</kbd></button></div>
   </div>
 </div>
 

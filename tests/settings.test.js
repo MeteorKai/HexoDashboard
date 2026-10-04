@@ -62,12 +62,46 @@ async function fixture(t, savedBlog) {
   return {root,app,blog,base,port,info,settingsFile,request};
 }
 
+function seedPages(f) {
+  const files={
+    'about/index.md':'---\ntitle: About\nlayout: page\n# keep\n---\nOriginal about\n',
+    'links/index.md':'---\ntitle: Links\nlayout: links\n---\n',
+    '_data/links.yml':'- links_category: Friends\n  list:\n    - name: Example\n      link: https://example.test/\n'
+  };
+  for(const [name,content] of Object.entries(files)) {
+    const file=path.join(f.blog,'source',name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,content);
+  }
+  return files;
+}
+
+test('independent pages API edits About and friend data with tokens, revisions and backups',async t=>{
+  const f=await fixture(t,'valid'),files=seedPages(f);
+  assert.deepEqual((await f.request('/api/pages')).data.files.map(file=>file.name),['about/index.md','links/index.md','_data/links.yml']);
+  for(const name of Object.keys(files)) {
+    const current=(await f.request('/api/page?name='+encodeURIComponent(name))).data;
+    const content=name==='links/index.md' ? current.content.replace('Links','My links') : current.content.replace('Original about','Edited about').replace('Example','New friend');
+    const input={blog:f.blog,name,revision:current.revision,content};
+    assert.equal((await fetch(f.base+'/api/page',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)})).status,403);
+    assert.equal((await f.request('/api/page',{...input,blog:f.root})).status,409);
+    const saved=await f.request('/api/page',input);
+    assert.equal(saved.status,200);
+    assert.equal(fs.readFileSync(path.join(f.blog,'source',name),'utf8'),content);
+    assert.equal(fs.readFileSync(path.join(f.blog,saved.data.backup),'utf8'),files[name]);
+    assert.equal((await f.request('/api/page',input)).status,409);
+  }
+  assert.equal((await f.request('/api/page?name=_posts%2Farticle.md')).status,400);
+  assert.equal((await f.request('/api/page?name=..%2F_config.yml')).status,400);
+  assert.equal((await f.request('/api/page?name=missing%2Findex.md')).status,404);
+  assert.deepEqual(fs.readdirSync(path.join(f.blog,'source','_posts')),[]);
+});
+
 test('web setup starts without a blog and configures it without restarting',async t=> {
   const f=await fixture(t);
   assert.equal(f.info.configured,false);
   assert.equal(f.info.blog,'');assert.ok(f.info.token);
   assert.equal((await fetch(f.base+'/')).status,200);
   assert.equal((await f.request('/api/posts')).status,409);
+  assert.equal((await f.request('/api/pages')).status,409);
   assert.equal((await f.request('/api/run',{kind:'build'})).status,409);
   assert.equal((await f.request('/api/settings',{blog:''})).status,400);
   assert.equal((await f.request('/api/settings',{blog:path.join(f.root,'missing')})).status,400);
@@ -100,6 +134,52 @@ test('web setup starts without a blog and configures it without restarting',asyn
   assert.equal((await f.request('/api/config',{...extra,content:'extra: switched\n'})).status,409);
   assert.equal(fs.readFileSync(path.join(f.blog,'config.yaml'),'utf8'),'extra: false\n');
   assert.equal((await f.request('/api/info')).data.blog,other);
+});
+
+test('web pages UI edits Markdown and friend YAML without overwriting the article editor', {skip:process.platform!=='win32'||process.env.HEXO_UI_TEST!=='1'}, async t=>{
+  const f=await fixture(t,'valid'),files=seedPages(f);
+  const probe=net.createServer();await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));
+  const port=probe.address().port;await new Promise(resolve=>probe.close(resolve));
+  const {launch}=require('./cdp');const br=await launch({out:path.join(f.root,'shots'),freshProfile:true,port});
+  const wait=async expr=>assert.ok(await br.waitFor(expr),'UI did not reach: '+expr);
+  const set=async (id,value,event='input')=>br.evaluate(`(() => {const el=document.getElementById(${JSON.stringify(id)});el.value=${JSON.stringify(value)};el.dispatchEvent(new Event(${JSON.stringify(event)},{bubbles:true}));})()`);
+  const click=async id=>br.evaluate(`document.getElementById(${JSON.stringify(id)}).click()`);
+  try {
+    await br.goto(f.base);await wait('!document.getElementById("btnSave").disabled');
+    await set('f-title','Unrelated unsaved article');await set('body','Keep the article editor');
+    await click('btnPages');
+    await wait('document.getElementById("pagesModal").classList.contains("show") && document.getElementById("pageContent").value.includes("Original about")');
+    assert.equal(await br.evaluate('document.getElementById("pageFile").options.length'),3);
+    await set('pageContent','---\ntitle: [\n---\nBody');await click('btnSavePage');
+    await wait('document.getElementById("pageNote").textContent.includes("YAML 格式错误")');
+    assert.equal(fs.readFileSync(path.join(f.blog,'source','about','index.md'),'utf8'),files['about/index.md']);
+    const edited=files['about/index.md'].replace('Original about','Edited in UI');
+    await set('pageContent',edited);
+    await br.evaluate('document.getElementById("pageContent").dispatchEvent(new KeyboardEvent("keydown",{key:"s",ctrlKey:true,bubbles:true,cancelable:true}))');
+    await wait('document.getElementById("pageNote").textContent.includes("已保存") && document.getElementById("btnSavePage").disabled');
+    assert.equal(fs.readFileSync(path.join(f.blog,'source','about','index.md'),'utf8'),edited);
+    assert.equal(await br.evaluate('document.getElementById("body").value'),'Keep the article editor');
+    assert.deepEqual(fs.readdirSync(path.join(f.blog,'source','_posts')),[]);
+    await set('pageFile','_data/links.yml','change');
+    await wait('document.getElementById("pageContent").value.includes("name: Example")');
+    const friends=files['_data/links.yml'].replace('Example','New friend');
+    await set('pageContent',friends);await click('btnSavePage');
+    await wait('document.getElementById("pageNote").textContent.includes("已保存") && document.getElementById("btnSavePage").disabled');
+    assert.equal(fs.readFileSync(path.join(f.blog,'source','_data','links.yml'),'utf8'),friends);
+    const external=friends.replace('New friend','External friend');
+    fs.writeFileSync(path.join(f.blog,'source','_data','links.yml'),external);
+    await set('pageContent',friends+'# pending\n');await click('btnSavePage');
+    await wait('document.getElementById("pageNote").textContent.includes("外部修改")');
+    assert.equal(fs.readFileSync(path.join(f.blog,'source','_data','links.yml'),'utf8'),external);
+    await br.evaluate(`window.savedConfirm=window.confirm;window.confirm=()=>false;document.getElementById('pageFile').value='links/index.md';document.getElementById('pageFile').dispatchEvent(new Event('change'));document.getElementById('btnClosePages').click();window.confirm=window.savedConfirm;`);
+    assert.equal(await br.evaluate('document.getElementById("pageFile").value'),'_data/links.yml');
+    assert.equal(await br.evaluate('document.getElementById("pagesModal").classList.contains("show")'),true);
+    await click('btnReloadPage');await wait('document.getElementById("pageContent").value.includes("External friend")');
+    await set('pageContent',external+'# not saved\n');await click('btnClosePages');
+    await wait('!document.getElementById("pagesModal").classList.contains("show")');
+    assert.ok(br.dialogs.some(dialog=>dialog.message.includes('页面文件有未保存')));
+    assert.equal(fs.readFileSync(path.join(f.blog,'source','_data','links.yml'),'utf8'),external);
+  } finally {await br.close();}
 });
 
 test('web setup uses a saved valid blog and keeps stale paths recoverable',async t=> {

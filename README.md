@@ -19,6 +19,7 @@
   只上传文档实际引用的图片，不受目录中无关图片数量影响。优先按相对路径匹配，同名图片无法确定时提示，不随便取第一张。图片复制进**文章同名资源目录**，正文改成 Hexo 原生 `{% asset_img 文件名 说明 %}`；Front-matter 的标题、日期、标签填入主页面表单，导入后请确认并保存。实时预览在首次保存前也能显示导入图片，刷新后恢复未保存编辑时会保留图片目录信息。外链原样保留；缺图保持引用并点名提示；代码块和行内代码中的图片示例不改写。博客需开启 `post_asset_folder: true` 才能复制图片。
 - **生成与部署**：执行 Hexo 的生成、清理、预览、部署命令，在页面查看实时任务日志并中止任务。
 - **网页设置与配置编辑**：首次启动即可在网页设置博客目录；原文编辑博客 YAML 配置，校验语法、检查版本冲突并自动备份。
+- **独立页面管理**：编辑 About、Links、分类、标签等 Markdown 页面，以及 `_data` 下的友链等 YAML 数据文件。
 - **无窗口启动**：Windows 支持 VBS 隐藏启动；在网页关闭服务后，后台与隐藏启动器一起退出。
 
 ## 环境要求
@@ -115,12 +116,24 @@ PORT=4322 node src/server.js
 
 保存前校验 YAML 对象格式，单个文件最大 1MB；保留原文注释及原文件的换行和 BOM。旧内容自动备份到博客的 `.hexo-tool-history/configs/`。如果文件在外部被修改，或博客目录已切换，会拒绝覆盖；请先保留自己的编辑内容，再点击「重新读取」。关闭编辑窗口、切换配置文件或刷新时，有未保存的修改会提示确认。
 
+## 编辑 About、友链等独立页面
+
+点击顶栏「页面管理」，选择源文件并编辑原文：
+
+- `about/index.md`：关于页正文及标题、`layout` 等 Front-matter。
+- `links/index.md` 或 `link/index.md`：友链页面本身；如果主题从数据文件生成友链，请选择 `_data/links.yml` 等对应 YAML 文件修改名单。
+- 其他已存在的 Markdown 页面，例如分类、标签、搜索页，也会列出；支持子目录及 `.markdown` 后缀。
+
+点击「保存页面文件」或按 Ctrl+S。保存后点击「编译站点」使修改生效；主题数据修改后可能需要重启本地预览。这里只编辑已存在的文件，不会改动主题模板，也不会把页面写进文章目录。
+
+支持原文编辑、YAML 校验、外部修改冲突检测和未保存提醒。旧文件自动备份到博客的 `.hexo-tool-history/pages/`；单个文件最大 1MB，保留原文件的换行、BOM 和未改动的元数据。
+
 ## 数据存放位置
 
 | 位置 | 内容 |
 | --- | --- |
 | 博客的 `source/_posts/`、`source/_drafts/` | 正式文章、草稿与同名图片资源目录 |
-| 博客的 `.hexo-tool-history/` | 文章历史版本、归档图片、YAML 配置备份 |
+| 博客的 `.hexo-tool-history/` | 文章历史版本、归档图片、YAML 配置与独立页面备份 |
 | 博客的 `.hexo-tool-trash/` | 删除文章与其图片的回收站 |
 | 本工具的 `data/` | 本地设置、启动日志、PID 与上次部署记录 |
 | 浏览器 `localStorage` | 未保存编辑内容的恢复缓存、界面偏好 |
@@ -154,7 +167,7 @@ hexo-tool/
 在项目根目录运行以下命令，无需安装额外测试依赖：
 
 ```bash
-node --test tests/lib.test.js tests/pdfmd.test.js tests/mdimport.test.js tests/launchers.test.js tests/settings.test.js
+node --test tests/lib.test.js tests/pdfmd.test.js tests/mdimport.test.js tests/pages.test.js tests/launchers.test.js tests/settings.test.js
 node tests/static-check.js
 node tests/buffer-check.js
 node tests/contrast-audit.js
