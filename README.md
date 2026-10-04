@@ -49,7 +49,7 @@ wscript.exe ".\启动写作台.vbs"
 - `启动写作台.vbs`：不显示终端窗口，需要与同名 BAT 保持在同一目录。
 - `启动写作台.bat`：会交给 VBS 隐藏运行，但 Windows 启动 BAT 时仍可能短暂闪窗。
 - 两种入口都优先使用 PATH 中的 Node.js；找不到时才尝试 `node/node.exe`。
-- 启动失败时会弹出错误提示，可查看 `data/launcher.log`。
+- 关闭浏览器页面不会停止后台；再次双击启动器会重新打开已有写作台，不会另起服务。每次启动独立记录 `data/launcher-*.log`，启动失败时弹窗会给出具体日志路径。
 
 ### macOS
 

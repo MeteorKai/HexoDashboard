@@ -1370,6 +1370,9 @@
     $('btnCloseHist').addEventListener('click', () => $('histModal').classList.remove('show'));
     $('btnCloseAssets').addEventListener('click', () => $('assetsModal').classList.remove('show'));
     $('btnCloseSettings').addEventListener('click', closeSettings);
+    $('btnCheckUpdate').addEventListener('click', () => {
+      window.open('https://github.com/MeteorKai/HexoDashboard', '_blank', 'noopener,noreferrer');
+    });
     for (const id of ['trashModal', 'histModal', 'assetsModal', 'settingsModal']) {
       $(id).addEventListener('click', (e) => { if (e.target === $(id)) { if (id === 'settingsModal') closeSettings(); else $(id).classList.remove('show'); } });
     }

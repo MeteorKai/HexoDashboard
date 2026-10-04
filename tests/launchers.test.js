@@ -67,6 +67,9 @@ function command(f, arg, env) {
   return run(BASH, [f.script.replace(/\\/g, '/'), ...(arg ? [arg] : [])], f, env);
 }
 const readRecord = f => JSON.parse(fs.readFileSync(f.record, 'utf8'));
+const readLauncherLogs = f => fs.readdirSync(path.join(f.app, 'data'))
+  .filter(name => /^launcher(?:-.+)?\.log$/.test(name))
+  .map(name => fs.readFileSync(path.join(f.app, 'data', name), 'utf8')).join('\n');
 async function waitFor(check) {
   for (let i = 0; i < 100; i++) {
     const result = await check();
@@ -125,7 +128,7 @@ test('Hidden launcher keeps quoted paths, port and server exit code', {skip:proc
   const f = fixture(t, '启动写作台.vbs');
   const result = await vbs(f, f.blog, {PORT:'4950', LAUNCH_EXIT:'7'});
   assert.equal(result.code, 7, result.output);
-  assert.match(result.output, /launcher\.log/);
+  assert.match(result.output, /launcher(?:-.+)?\.log/);
   assert.deepEqual(readRecord(f), {args:[f.blog, '--open'], cwd:f.app, exe:process.execPath, port:'4950', blog:''});
 });
 
@@ -141,9 +144,9 @@ test('Hidden launcher leaves saved blog and port resolution to the server', {ski
 test('Hidden launcher reports startup errors via a saved log', {skip:process.platform !== 'win32'}, async t => {
   const f = fixture(t, '启动写作台.vbs');
   const result = await vbs(f, f.blog, {PATH:path.join(process.env.SystemRoot, 'System32')});
-  assert.equal(result.code, 1, result.output + fs.readFileSync(path.join(f.app, 'data', 'launcher.log'), 'utf8'));
-  assert.match(result.output, /launcher\.log/);
-  assert.match(fs.readFileSync(path.join(f.app, 'data', 'launcher.log'), 'utf8'), /No node/);
+  assert.equal(result.code, 1, result.output + readLauncherLogs(f));
+  assert.match(result.output, /launcher(?:-.+)?\.log/);
+  assert.match(readLauncherLogs(f), /No node/);
   assert.equal(fs.existsSync(f.record), false);
 });
 
@@ -162,12 +165,11 @@ test('BAT hands off to the windowless host and exits without waiting', {skip:pro
     assert.deepEqual(readRecord(f).args, [f.blog, '--open']);
   } finally {
     fs.writeFileSync(f.record + '.stop', '');
-    await waitFor(() => fs.existsSync(path.join(f.app, 'data', 'launcher.log')) &&
-      /Server stopped/.test(fs.readFileSync(path.join(f.app, 'data', 'launcher.log'), 'utf8')));
+    await waitFor(() => /Server stopped/.test(readLauncherLogs(f)));
   }
 });
 
-test('Page shutdown stops the real hidden server and its waiting launcher', {skip:process.platform !== 'win32'}, async t => {
+test('Repeated hidden launch reuses the real server, then page shutdown stops its launcher', {skip:process.platform !== 'win32'}, async t => {
   const f = fixture(t, '启动写作台.vbs');
   for (const file of fs.readdirSync(path.join(APP, 'src'))) {
     fs.copyFileSync(path.join(APP, 'src', file), path.join(f.app, 'src', file));
@@ -175,17 +177,21 @@ test('Page shutdown stops the real hidden server and its waiting launcher', {ski
   fs.mkdirSync(path.join(f.app, 'vendor'));
   fs.copyFileSync(path.join(APP, 'vendor', 'js-yaml.js'), path.join(f.app, 'vendor', 'js-yaml.js'));
   fs.mkdirSync(path.join(f.blog, 'source', '_posts'), {recursive:true});
-  // Suppress only the copied server's browser opener; its APIs and shutdown are unchanged.
+  // Use a real asynchronous child to verify reopening is dispatched before exit.
   const server = path.join(f.app, 'src', 'server.js');
-  fs.writeFileSync(server, fs.readFileSync(server, 'utf8').replace("if(process.argv.includes('--open')) {", 'if(false) {'));
+  fs.writeFileSync(server, fs.readFileSync(server, 'utf8').replace(
+    "spawn('explorer.exe',[url],{windowsHide:true})",
+    "spawn(process.execPath,['-e','setTimeout(()=>{},100)'],{windowsHide:true}).on('spawn',()=>fs.appendFileSync(path.join(DATA,'browser-open.log'),url+'\\n'))"
+  ));
   const probe = require('net').createServer();
   await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
   const port = probe.address().port;
   await new Promise(resolve => probe.close(resolve));
   const base = `http://127.0.0.1:${port}`;
+  fs.writeFileSync(path.join(f.app, 'data', '.hexo-tool-settings.json'), JSON.stringify({blog:f.blog, toolPort:port}));
   const pidFile = path.join(f.app, 'data', `.server-${port}.pid`);
   let ended = false;
-  const stopped = vbs(f, f.blog, {PORT:String(port)});
+  const stopped = vbs(f);
   stopped.then(() => { ended = true; }, () => { ended = true; });
   try {
     const info = await waitFor(async () => {
@@ -194,6 +200,30 @@ test('Page shutdown stops the real hidden server and its waiting launcher', {ski
     });
     assert.equal(ended, false, 'Launcher waits while the server is running');
     assert.equal(fs.existsSync(pidFile), true);
+    const originalPid = fs.readFileSync(pidFile, 'utf8');
+    const servePidFile = path.join(f.app, 'data', `.hexo-serve-${port}.pid`);
+    fs.writeFileSync(servePidFile, 'existing-preview-marker');
+    const launchAgain = [
+      () => vbs(f),
+      () => run(process.env.ComSpec, ['/d', '/s', '/c', `call "${path.join(f.app, '启动写作台.bat')}"`], f, {HEXO_TOOL_BACKGROUND:''}, 'ignore')
+    ];
+    if (BASH) {
+      const script = path.join(f.app, '启动写作台.command');
+      fs.copyFileSync(path.join(APP, '启动写作台.command'), script);
+      launchAgain.push(() => command({...f, script}));
+    }
+    for (const [index, launch] of launchAgain.entries()) {
+      const second = await launch();
+      assert.equal(second.code, 0, second.output + readLauncherLogs(f));
+      await waitFor(() => fs.readFileSync(path.join(f.app, 'data', 'browser-open.log'), 'utf8').trim().split('\n').length === index + 2);
+    }
+    assert.match(readLauncherLogs(f), /已有写作台/);
+    assert.equal(fs.readdirSync(path.join(f.app, 'data')).filter(name => /^launcher-.+\.log$/.test(name)).length, 3);
+    assert.equal(fs.readFileSync(pidFile, 'utf8'), originalPid);
+    assert.equal(fs.readFileSync(servePidFile, 'utf8'), 'existing-preview-marker');
+    assert.equal((await (await fetch(base + '/api/info')).json()).pid, info.pid);
+    assert.deepEqual(fs.readFileSync(path.join(f.app, 'data', 'browser-open.log'), 'utf8').trim().split('\n'), Array(launchAgain.length + 1).fill(base + '/'));
+    assert.equal(ended, false, 'Repeated launch leaves the original launcher running');
     const response = await fetch(base + '/api/shutdown', {
       method:'POST', headers:{'Content-Type':'application/json', 'x-hexo-token':info.token}, body:'{}'
     });
@@ -209,6 +239,35 @@ test('Page shutdown stops the real hidden server and its waiting launcher', {ski
       try { process.kill(pid); } catch { /* Already exited. */ }
     }
     await stopped;
+  }
+});
+
+test('A port owned by another service remains a launcher error', {skip:process.platform !== 'win32'}, async t => {
+  const f = fixture(t, '启动写作台.vbs');
+  for (const file of fs.readdirSync(path.join(APP, 'src'))) {
+    fs.copyFileSync(path.join(APP, 'src', file), path.join(f.app, 'src', file));
+  }
+  fs.mkdirSync(path.join(f.app, 'vendor'));
+  fs.copyFileSync(path.join(APP, 'vendor', 'js-yaml.js'), path.join(f.app, 'vendor', 'js-yaml.js'));
+  fs.mkdirSync(path.join(f.blog, 'source', '_posts'), {recursive:true});
+  const other = require('http').createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ok:true, pid:process.pid, port, blog:f.blog}));
+  });
+  await new Promise(resolve => other.listen(0, '127.0.0.1', resolve));
+  const port = other.address().port;
+  try {
+    for (const stale of [false, true]) {
+      const pidFile = path.join(f.app, 'data', `.server-${port}.pid`);
+      if (stale) fs.writeFileSync(pidFile, `${process.pid + 1}\n`);
+      const result = await vbs(f, f.blog, {PORT:String(port)});
+      assert.equal(result.code, 1, result.output + readLauncherLogs(f));
+      assert.match(result.output, /launcher.*\.log/);
+      assert.match(readLauncherLogs(f), /端口 .* 已被占用/);
+      if (stale) assert.equal(fs.readFileSync(pidFile, 'utf8'), `${process.pid + 1}\n`);
+    }
+  } finally {
+    await new Promise(resolve => other.close(resolve));
   }
 });
 

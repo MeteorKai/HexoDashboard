@@ -124,6 +124,13 @@ test('web settings UI completes onboarding and edits config YAML safely', {skip:
   try {
     await br.goto(f.base);
     await wait('document.getElementById("settingsModal").classList.contains("show") && document.getElementById("settingsNote").textContent.includes("首次使用")');
+    const updateTarget=await br.evaluate(`(() => {
+      const original=window.open; let target;
+      try { window.open=(...args)=>{target=args;}; document.getElementById('btnCheckUpdate').click(); return target; }
+      finally { window.open=original; }
+    })()`);
+    assert.deepEqual(updateTarget,['https://github.com/MeteorKai/HexoDashboard','_blank','noopener,noreferrer']);
+    assert.equal(await br.evaluate('document.getElementById("settingsModal").classList.contains("show")'),true);
     assert.equal(await br.evaluate('document.getElementById("btnSave").disabled'),true);
     await set('s-blog',f.blog);
     await click('btnSaveSettings');

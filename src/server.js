@@ -792,20 +792,43 @@ const server = http.createServer(async (req,res)=>{
 function sendFile(res,file) {
   fs.readFile(file,(err,buf)=>{if(err){res.writeHead(404);return res.end('404');}res.writeHead(200,{'Content-Type':MIME[path.extname(file).toLowerCase()]||'application/octet-stream'});res.end(buf);});
 }
-const PID_FILE=path.join(DATA,`.server-${PORT}.pid`);
-server.on('listening',()=>{
-  try{lib.atomicWrite(PID_FILE,`${process.pid}\n${Date.now()}\n`);}catch{/* 非致命 */}
+function openBrowser() {
   if(process.argv.includes('--open')) {
     const url=`http://127.0.0.1:${PORT}/`;
     if(process.platform==='win32')spawn('explorer.exe',[url],{windowsHide:true}).on('error',e=>console.warn(e.message));
     else if(process.platform==='darwin')spawn('open',[url]).on('error',e=>console.warn(e.message));
   }
+}
+const PID_FILE=path.join(DATA,`.server-${PORT}.pid`);
+let ownsPort=false;
+server.on('listening',()=>{
+  ownsPort=true;
+  try{lib.atomicWrite(PID_FILE,`${process.pid}\n${Date.now()}\n`);}catch{/* 非致命 */}
+  openBrowser();
 });
-server.on('error',e=>{console.error('[x] '+(e.code==='EADDRINUSE'?`端口 ${PORT} 已被占用，请关闭旧写作台或设置 PORT`:e.message));process.exit(1);});
+server.on('error',async e=>{
+  if(e.code==='EADDRINUSE' && process.argv.includes('--open')) {
+    try {
+      const response=await fetch(`http://127.0.0.1:${PORT}/api/info`,{signal:AbortSignal.timeout(1500)});
+      const info=await response.json();
+      const pid=Number(fs.readFileSync(PID_FILE,'utf8').split('\n')[0]);
+      // 仅复用本应用的存活实例，不能把其他占用端口的服务当成写作台。
+      if(response.ok && info.ok && pid>0 && info.pid===pid && info.port===PORT && info.blog===BLOG) {
+        console.log('[*] 已有写作台正在运行，打开现有页面');
+        openBrowser();
+        // 等浏览器启动子进程完成，不能在 spawn 仍有异步事件时强制退出。
+        process.exitCode=0;
+        return;
+      }
+    } catch { /* 仍按端口冲突报告 */ }
+  }
+  console.error('[x] '+(e.code==='EADDRINUSE'?`端口 ${PORT} 已被占用，请关闭旧写作台或设置 PORT`:e.message));
+  process.exit(1);
+});
 server.listen(PORT,'127.0.0.1');
 process.on('exit',()=>{
   for(const job of jobs.values())if(job.child?.pid)killTree(job.child.pid);
-  clearServePid();
+  if(ownsPort)clearServePid();
   try{removeOwnPidFile(PID_FILE);}catch{/* 非致命 */}
 });
 process.on('SIGINT',()=>process.exit(0));process.on('SIGTERM',()=>process.exit(0));

@@ -10,7 +10,8 @@ shell.Environment("Process")("HEXO_TOOL_BACKGROUND") = "1"
 blog = ""
 If WScript.Arguments.Count > 0 Then blog = WScript.Arguments(0)
 If Not fso.FolderExists(fso.BuildPath(app, "data")) Then fso.CreateFolder(fso.BuildPath(app, "data"))
-logFile = fso.BuildPath(app, "data\launcher.log")
+' Separate logs prevent a second launch from failing on the first launch's open file.
+logFile = fso.BuildPath(app, "data\launcher-" & fso.GetBaseName(fso.GetTempName()) & ".log")
 command = Quote(shell.ExpandEnvironmentStrings("%ComSpec%")) & " /d /s /c " & _
           Quote("call " & Quote(bat) & " " & Quote(blog) & " > " & Quote(logFile) & " 2>&1")
 On Error Resume Next
