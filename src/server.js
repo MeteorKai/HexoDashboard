@@ -8,6 +8,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const lib = require('./lib');
 const pdfimport = require('./pdfimport');   // 只在 /api/import-pdf 用到；pdf.js 本体是惰性加载的
+const mdimport = require('./mdimport');     // /api/import-md：Markdown 导入与 multipart 解析
 const crypto = require('crypto');
 const net = require('net');
 
@@ -83,6 +84,8 @@ function readJSONBody(req, limit = 4 * 1024 * 1024) {
   });
 }
 const PDF_MAX = 60 * 1024 * 1024;           // 导入 PDF 的体积上限（本机样本里最大的一份 41MB）
+const MD_MAX = 80 * 1024 * 1024;            // 导入 Markdown 的上限：md 本身很小，主要是跟着一起上来的图片
+const IMG_MAX = 30 * 1024 * 1024;           // 单张图的上限（含"按本机绝对路径去读"的那些）
 function readRawBody(req, limit = 30 * 1024 * 1024, what = '文件') {
   return new Promise((resolve, reject) => {
     const chunks = []; let len = 0;
@@ -461,6 +464,21 @@ function startJob(kind, opts = {}) {
   return job;
 }
 
+/** 导入（PDF / Markdown）时图片该落进哪个"文章同名资源目录"。
+ *
+ *  目录名必须和**保存时算出来的那个**完全一致，否则一保存正文里的 asset_img 就全部
+ *  找不到文件。保存走的是 `sanitizeName(f-name || title)`，所以这里用同一条规则算，
+ *  并把名字回给前端写进 f-name —— 用户改标题也不会换目录（f-name 优先于 title）。
+ *  返回 {name, dir}；没给名字或名字是 Windows 保留名时 → {name:'', dir:null}（就当这次没图）。 */
+function importAssetDir(post, title, draft) {
+  const assetBase = post || title;
+  if (!assetBase) return { name: '', dir: null };
+  try {
+    const name = lib.sanitizeName(assetBase);
+    return { name, dir: lib.resolveInside(lib.postDir(BLOG, draft), name, '') };
+  } catch { return { name: '', dir: null }; }     // 保留名之类的极端文件名就不带图了
+}
+
 /* ---------------- 路由 ---------------- */
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -640,16 +658,10 @@ const server = http.createServer(async (req,res)=>{
       const qPost=url.searchParams.get('post')||'';
       const wantImages=url.searchParams.get('images')!=='0';
       const assetFolder=!!lib.readSiteConfig(BLOG).postAssetFolder;
-      /* 图片要落进"文章同名资源目录"，而这个目录名必须和**保存时算出来的那个**一致，
-         否则一保存正文里的 asset_img 就全部找不到文件。保存走的是
-         `sanitizeName(f-name || title)`，所以这里用同一条规则算，并把名字回给前端
-         写进 f-name —— 用户改标题也不会换目录（f-name 优先于 title）。 */
-      let assetName='',assetDir=null;
-      const assetBase=qPost||qTitle,assetDraft=qPost?url.searchParams.get('draft')==='1':qDraft;
-      if(wantImages && assetFolder && assetBase) {
-        try { assetName=lib.sanitizeName(assetBase); assetDir=lib.resolveInside(lib.postDir(BLOG,assetDraft),assetName,''); }
-        catch { assetName=''; assetDir=null; }                  // 保留名之类的极端文件名就不带图了
-      }
+      /* 目录名怎么算、为什么必须和保存时算出来的那个一致：见 importAssetDir。 */
+      const assetDraft=qPost?url.searchParams.get('draft')==='1':qDraft;
+      const target=(wantImages && assetFolder) ? importAssetDir(qPost,qTitle,assetDraft) : {name:'',dir:null};
+      const assetName=target.name,assetDir=target.dir;
       let written=0;
       const images=assetDir ? (async (im,i)=>{
         const original=`pdf-第${im.page}页图${i+1}.${im.ext}`;   // 只用来生成 alt，文件名是内容哈希
@@ -667,6 +679,72 @@ const server = http.createServer(async (req,res)=>{
          前端也用不上，没有理由出现在响应里。 */
       return sendJSON(res,200,{ok:true,title:r.title,markdown:r.markdown,stats:r.stats,
         assets:assetName?{name:assetName,count:written,draft:assetDraft}:null,assetFolder});
+    }
+    /* Markdown 导入：一份 .md（以及跟着一起选进来的图片）变成一篇文章。
+       正文不用猜版式 —— 直接读原文，只把图片引用换成 Hexo 原生 {% asset_img %}，
+       并把引用到的图片字节**复制**进文章的同名资源目录。
+       图片和 md 走同一个 multipart 请求：只有字节都在服务端，资源名（内容哈希）
+       才算得出来；分开发的话浏览器还得先问"这篇文章叫什么"，顺序就绕了。
+       这里和 PDF 导入一样**不占博客写锁** —— 它只往资源目录里添文件，
+       生成或部署跑着的时候也能先整理素材。 */
+    if(p==='/api/import-md' && req.method==='POST') {
+      const raw=await readRawBody(req,MD_MAX,'Markdown');
+      /* 先看 Content-Type：浏览器用 FormData 发的时候会自己带上 boundary，
+         少了它整个请求就是一堆没法切分的字节，得在门口说清楚。 */
+      const ct=String(req.headers['content-type']||'');
+      const bm=/boundary=(?:"([^"]+)"|([^;]+))/i.exec(ct);
+      if(!/multipart\/form-data/i.test(ct)||!bm)throw Object.assign(new Error('请求格式不对：需要 multipart/form-data'),{status:400});
+      const parts=mdimport.parseMultipart(raw,(bm[1]||bm[2]).trim());
+      /* 字段名约定（见 web/editor.js 的 buildImportForm）：
+           md     → Markdown 原文      mdrel → md 在上传时的相对路径（用来解析相对引用）
+           f:xxx  → 一张图片，xxx 是它的相对路径（子目录里的图靠它对上号） */
+      let mdText='',mdRel='',mdMode='auto';const files=new Map();
+      for(const part of parts) {
+        if(part.name==='md')mdText=part.data.toString('utf8');
+        else if(part.name==='mdrel')mdRel=part.data.toString('utf8');
+        else if(part.name==='mdmode')mdMode=part.data.toString('utf8');
+        else if(part.name.startsWith('f:')){const key=part.name.slice(2);if(key)files.set(key,part.data);}
+      }
+      mdText=mdText.replace(/^\uFEFF/,'');
+      if(!['auto','markdown','obsidian'].includes(mdMode))throw Object.assign(new Error('Markdown 导入模式无效'),{status:400});
+      if(!mdText.trim())throw Object.assign(new Error('这个 Markdown 文件是空的'),{status:422});
+      const qTitle=url.searchParams.get('title')||'',qDraft=url.searchParams.get('draft')==='1';
+      const qPost=url.searchParams.get('post')||'';
+      const assetFolder=!!lib.readSiteConfig(BLOG).postAssetFolder;
+      const assetDraft=qPost?url.searchParams.get('draft')==='1':qDraft;
+      const target=assetFolder ? importAssetDir(qPost,qTitle,assetDraft) : {name:'',dir:null};
+      const written=new Set();
+      const images=target.dir ? (async (img)=>{
+        const fileName=lib.assetName(img.data,img.name);       // 与手动上传同一套：内容哈希
+        if(!fs.existsSync(target.dir))fs.mkdirSync(target.dir,{recursive:true});
+        const p=lib.resolveInside(target.dir,fileName,'');
+        if(!fs.existsSync(p))lib.atomicWrite(p,img.data);      // 同一张图重复引用只会写一次
+        written.add(fileName);
+        /* alt 用原文里写的那个（mdimport 从 ![alt](…) / <img alt> 里取出来），
+           没有才退回文件名 —— 作者写的"图一"比"image-20240101"有用得多。 */
+        return lib.assetTagAlt(fileName, img.alt || lib.altFromName(img.name));
+      }) : null;
+      /* 允许读本机绝对路径上的图片（Typora 等"粘贴图片"会写 `file:///C:/.../xxx.png`）。
+         写作台是跑在**用户自己机器上**的本地服务，导入的是用户自己选的 md，
+         所以这条路的代价可接受；但边界必须卡死：
+           · 只认图片后缀（lib.assetExt 有白名单）—— 不会把别的类型吸进博客；
+           · 只认绝对路径 —— 相对路径是"随 md 上传的文件"那条路，不能混；
+           · 读不到（换了机器、路径失效）就返回 null，如实算缺图，不假装成功。 */
+      const readLocal=async (abs)=>{
+        if(!path.isAbsolute(abs))return null;
+        if(!lib.assetExt(abs,''))return null;          // 非图片后缀：一律不读
+        try{ if(!fs.existsSync(abs))return null; const st=fs.statSync(abs); if(!st.isFile())return null;
+          if(st.size>IMG_MAX)return null; return fs.readFileSync(abs); }
+        catch{ return null; }
+      };
+      const r=await mdimport.convert({text:mdText,files,mdPath:mdRel,images,readLocal,mode:mdMode});
+      if(!r.markdown.trim())throw Object.assign(new Error('这份 Markdown 里没有正文'),{status:422});
+      /* 标题的优先级：front-matter 里写的 > 文件名。
+         md 的标题是作者自己写进去的，可信；没有 front-matter 时才退回文件名
+         （和 PDF 一样，之后在标题框里改就是了）。 */
+      const title=String((r.meta&&r.meta.title)||qTitle||'').trim();
+      return sendJSON(res,200,{ok:true,title,markdown:r.markdown,meta:r.meta||{},stats:r.stats,
+        missing:r.missing||[],assets:target.name?{name:target.name,count:written.size,draft:assetDraft}:null,assetFolder});
     }
     if(p.startsWith('/media/') && req.method==='GET') {
       const seg=p.slice(7).split('/');const mode=seg.shift();

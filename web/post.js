@@ -550,6 +550,31 @@
           : '已插到光标处，记得保存');
       return { stats: r.stats, hint };
     },
+    /* 这一页没有设置弹窗，也没有列表弹窗，所以：博客目录照直说、选文件取第一个。
+       导入本身不受影响 —— 图片照样进这篇文章的资源目录。 */
+    blogDir: () => (state.info && state.info.blog) || '',
+    onOpenBlogSettings: () => {
+      if (window.opener) window.opener.focus();
+      throw new Error('请回到写作台主页面，在右上角「设置」里改博客目录（这一页不支持改）');
+    },
+    chooseMd: (message, items) => window.confirm(message + '\n\n（这一页没有列表弹窗，' +
+      `就导入第 1 个：${items[0][0]}）`) ? items[0][1] : null,
+    /* Markdown 导入：这一页只对着**一篇文章**，所以和 PDF 一样插到光标处 ——
+     * 这里导入的是"内容"，不是"一篇文章"（front-matter 的标题日期属于这篇文章，
+     * 不能拿来覆盖它），所以只取正文。 */
+    importMd: async (form, base) => {
+      /* 带上 post/draft：图片要存进**这篇文章自己的**同名资源目录。 */
+      const q = 'title=' + encodeURIComponent(base) +
+        '&post=' + encodeURIComponent(state.name) + '&draft=' + (state.draft ? 1 : 0);
+      const r = await api('/api/import-md?' + q, { method: 'POST', body: form });
+      window.Editor.insertText(r.markdown, false);
+      const n = (r.assets && r.assets.count) || 0;
+      const miss = (r.missing && r.missing.length) || 0;
+      const hint = n ? `${n} 张图已存进本文资源目录，记得保存`
+        : (miss ? '已插到光标处；部分图片未找到（引用保持原样），请在「导入 MD」中补选正确的图片文件夹'
+          : '已插到光标处，记得保存');
+      return { stats: r.stats, hint, missingFiles: r.missing || [] };
+    },
   });
 
   bindUI();

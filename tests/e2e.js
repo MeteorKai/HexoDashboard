@@ -9,7 +9,7 @@
  *   - 覆盖 18 组、90+ 项：静态资源与 CSP / 令牌 / 检索 / 只提交改动字段 /
  *     乐观锁 428·409 / 插图与复用 / 图片路由与隔离 / 图片归档 / 历史版本 /
  *     草稿发表往返 / 回收站 / 设置校验 / 任务契约 / 编译产物路径 /
- *     独立编辑页路由 / PDF→Markdown 导入 / 关闭服务。
+ *     独立编辑页路由 / PDF→Markdown 导入 / Markdown 导入（含图片落盘）/ 关闭服务。
  *
  * 注意：设置校验那组**只测失败分支**，确保不会在 hexo-tool 目录里落下一个
  *       指向临时博客的 .hexo-tool-settings.json。
@@ -20,6 +20,7 @@ const http = require('http');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const { tinyPdf } = require('./pdf-fixture');
 
@@ -86,6 +87,23 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 
 /* 最小可用 PDF，给 /api/import-pdf 当输入（造法见 tests/pdf-fixture.js） */
 const PDF = tinyPdf('Hello PDF import');
+
+/* ---------- multipart/form-data：Markdown 导入就是这么发的（md + 图片一个请求） ----------
+ * 手写一个而不用 FormData：这里是 node 侧，而且必须能精确控制字段名（图片用的是
+ * `f:<相对路径>`，服务端靠它对上子目录里的图）。 */
+function multipart(parts, boundary) {
+  const chunks = [];
+  for (const p of parts) {
+    chunks.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${p.name}"` +
+      (p.file ? `; filename="${p.file}"` : '') + '\r\n' +
+      (p.type ? `Content-Type: ${p.type}\r\n` : '') + '\r\n', 'utf8'));
+    chunks.push(Buffer.isBuffer(p.data) ? p.data : Buffer.from(String(p.data), 'utf8'));
+    chunks.push(Buffer.from('\r\n'));
+  }
+  chunks.push(Buffer.from(`--${boundary}--\r\n`, 'utf8'));
+  return Buffer.concat(chunks);
+}
 
 /* ---------- HTTP ---------- */
 function req(opts, body) {
@@ -406,6 +424,123 @@ let slog = ''; srv.stdout.on('data', (c) => slog += c); srv.stderr.on('data', (c
     'assets 回传的目录名是**目录名**，不是路径', String(ij2.assets && ij2.assets.name));
   check(ij2.assets && !('dir' in ij2.assets) && !/[A-Za-z]:[\\/]/.test(JSON.stringify(ij2.assets)),
     'assets 里不带本机绝对路径（前端只要目录名）', JSON.stringify(ij2.assets));
+
+  log('');
+  log('== 17b. Markdown 导入（/api/import-md）==');
+  /* 和 PDF 导入最大的区别：这一次**真的会往博客里写东西** —— 图片要复制进
+     "文章同名资源目录"。所以这一组盯的是"图到底落在哪、正文指的对不对"，
+     这两件事错一处，保存之后就是一整篇裂图。 */
+  const BOUND = '----e2eMdImportBoundary';
+  const mpPost = (p, parts, withToken = true) => {
+    const body = multipart(parts, BOUND);
+    return req({
+      method: 'POST', path: p,
+      headers: { 'Content-Type': `multipart/form-data; boundary=${BOUND}`, 'Content-Length': body.length, ...(withToken ? { 'x-hexo-token': TOKEN } : {}) },
+    }, body);
+  };
+  const MD_SRC = [
+    '---',
+    'title: 导入的稿子',
+    'date: 2026-09-30 10:00:00',
+    'tags:',
+    '  - Hexo',
+    '---',
+    '',
+    '正文第一段。',
+    '',
+    '![示意图](img/one.png)',
+    '',
+    '```md',
+    '![代码示例](img/one.png)',
+    '```',
+    '',
+    '![缺的图](img/two.png)',
+    '',
+  ].join('\n');
+
+  const noTokMd = await mpPost('/api/import-md?title=x&draft=1', [{ name: 'md', data: MD_SRC }], false);
+  check(noTokMd.code === 403, '没令牌 → 403（导入也算写操作）', noTokMd.code);
+  const badCt = await req({ method: 'POST', path: '/api/import-md?title=x&draft=1', headers: { 'Content-Type': 'text/plain', 'Content-Length': 4, 'x-hexo-token': TOKEN } }, Buffer.from('abcd'));
+  check(badCt.code === 400 && /multipart/.test(j(badCt).error || ''), '不是 multipart → 400 且说清要什么格式', badCt.code + ' ' + j(badCt).error);
+  const emptyMd = await mpPost('/api/import-md?title=x&draft=1', [{ name: 'md', data: '   ' }]);
+  check(emptyMd.code === 422 && /空/.test(j(emptyMd).error || ''), '空文件 → 422 说"是空的"', emptyMd.code + ' ' + j(emptyMd).error);
+
+  const mdR = await mpPost('/api/import-md?title=' + encodeURIComponent('导入的稿子') + '&draft=1', [
+    { name: 'mdrel', data: 'a.md' },
+    { name: 'md', file: 'a.md', data: MD_SRC },
+    { name: 'f:img/one.png', file: 'one.png', type: 'image/png', data: PNG },
+  ]);
+  const mdJ = j(mdR);
+  check(mdR.code === 200 && mdJ.ok === true, '导入成功返回 200 + ok', mdR.code + ' ' + JSON.stringify(mdJ).slice(0, 160));
+  check(mdJ.title === '导入的稿子', '标题取 front-matter 里写的那个', mdJ.title);
+  check(!/^---/.test(mdJ.markdown || '') && /^正文第一段/.test(mdJ.markdown || ''),
+    'front-matter 被拆走，正文里只剩正文', JSON.stringify((mdJ.markdown || '').slice(0, 40)));
+  check(mdJ.meta && mdJ.meta.tags && mdJ.meta.tags[0] === 'Hexo' && mdJ.meta.date, '标题以外的元数据也回给前端（日期 / 标签）', JSON.stringify(mdJ.meta));
+
+  const hash = crypto.createHash('md5').update(PNG).digest('hex');
+  check(new RegExp('\\{% asset_img ' + hash + '\\.png 示意图 %\\}').test(mdJ.markdown || ''),
+    '正文里的图片换成 {% asset_img <内容哈希> %} 且保留原文 alt', JSON.stringify((mdJ.markdown || '').slice(0, 120)));
+  check(/```md\n!\[代码示例\]\(img\/one\.png\)\n```/.test(mdJ.markdown || ''),
+    '代码块里的图片示例一个字都没动', JSON.stringify((mdJ.markdown || '').slice(0, 200)));
+  check(Array.isArray(mdJ.missing) && mdJ.missing.length === 1 && mdJ.missing[0] === 'two.png',
+    '没带来字节的图片如实报回前端', JSON.stringify(mdJ.missing));
+  check(/!\[缺的图\]\(img\/two\.png\)/.test(mdJ.markdown || ''), '缺的那张保持原样（不假装成功）');
+
+  /* 落点：_drafts/<目录名>/<哈希>.png。目录名必须和保存时算出来的**完全一致**。 */
+  check(mdJ.assets && mdJ.assets.name === '导入的稿子' && mdJ.assets.count === 1 && mdJ.assets.draft === true,
+    '回传的目录名 / 图片数 / 草稿位都对', JSON.stringify(mdJ.assets));
+  const ddir = path.join(BLOG, 'source', '_drafts', '导入的稿子');
+  const landed = fs.existsSync(ddir) ? fs.readdirSync(ddir) : [];
+  check(landed.length === 1 && landed[0] === hash + '.png', '图片已复制进**文章同名资源目录**', JSON.stringify(landed));
+  check(fs.existsSync(path.join(ddir, hash + '.png')) && fs.readFileSync(path.join(ddir, hash + '.png')).equals(PNG),
+    '复制过去的字节和原图一致');
+  check(!fs.existsSync(path.join(BLOG, 'source', '_posts', '导入的稿子')),
+    'draft=1 时图进 _drafts，不会落到 _posts（否则发布时找不到图）');
+
+  /* 同一张图再导一次：命中同一个哈希，不会多出一份副本 */
+  const mdAgain = await mpPost('/api/import-md?title=' + encodeURIComponent('导入的稿子') + '&draft=1', [
+    { name: 'mdrel', data: 'a.md' },
+    { name: 'md', file: 'a.md', data: MD_SRC },
+    { name: 'f:img/one.png', file: 'one.png', type: 'image/png', data: PNG },
+  ]);
+  check(j(mdAgain).ok === true && fs.readdirSync(ddir).length === 1, '重复导入同一张图不会多出副本',
+    JSON.stringify(fs.readdirSync(ddir)));
+
+  /* Obsidian 导出的 md 里图片写作 `![[文件名]]`。不认这种写法的话整篇一张都换不掉，
+     而且因为压根没走到查找那一步，连 missing 都不会报 —— 用户看到的是"导入成功、图没变"。 */
+  const wikiMd = '正文\n\n![[Pasted image 20260101120000.png]]\n';
+  const mdWiki = await mpPost('/api/import-md?title=' + encodeURIComponent('导入的稿子') + '&draft=1', [
+    { name: 'mdrel', data: 'w.md' },
+    { name: 'md', file: 'w.md', data: wikiMd },
+    { name: 'f:Pasted image 20260101120000.png', file: 'Pasted image 20260101120000.png', type: 'image/png', data: PNG },
+  ]);
+  const wj = j(mdWiki);
+  check(new RegExp('\\{% asset_img ' + hash + '\\.png Pasted-image-20260101120000 %\\}').test(wj.markdown || ''),
+    'Obsidian 的 ![[图片]] 也换成 asset_img', JSON.stringify((wj.markdown || '').slice(0, 120)));
+  /* 反过来：图没带来时必须报 missing，不许闷声不响 */
+  const mdWikiMiss = await mpPost('/api/import-md?title=' + encodeURIComponent('导入的稿子') + '&draft=1', [
+    { name: 'mdrel', data: 'w.md' },
+    { name: 'md', file: 'w.md', data: '正文 ![[没了.png]]' },
+  ]);
+  check(JSON.stringify(j(mdWikiMiss).missing) === JSON.stringify(['没了.png']),
+    'Obsidian 的图没带来字节也要报缺图（不能静默留死链）', JSON.stringify(j(mdWikiMiss).missing));
+
+  const badMode = await mpPost('/api/import-md?title=x&draft=1', [
+    { name: 'md', data: '正文' }, { name: 'mdmode', data: 'invalid' },
+  ]);
+  check(badMode.code === 400, '无效的导入模式 → 400', badMode.code);
+  const plainMode = await mpPost('/api/import-md?title=x&draft=1', [
+    { name: 'md', data: '![[one.png]]\n![图](one.png)' }, { name: 'mdmode', data: 'markdown' },
+    { name: 'f:one.png', file: 'one.png', type: 'image/png', data: PNG },
+  ]);
+  check(j(plainMode).markdown.startsWith('![[one.png]]') && j(plainMode).stats.images === 1,
+    '普通模式只转换普通图片，不转换 wiki', j(plainMode).markdown);
+  const obsidianMode = await mpPost('/api/import-md?title=x&draft=1', [
+    { name: 'md', data: '![[one.png]]\n![[one.png|300]]\n![[另一篇笔记]]' }, { name: 'mdmode', data: 'obsidian' },
+    { name: 'f:assets/one.png', file: 'one.png', type: 'image/png', data: PNG },
+  ]);
+  check(j(obsidianMode).assets.count === 1 && j(obsidianMode).stats.images === 1 && j(obsidianMode).stats.missing === 0,
+    'Obsidian 模式复制 wiki 图片、按唯一图片计数，笔记嵌入不误报缺图', j(obsidianMode).stats);
 
   log('');
   log('== 18. 关闭服务（前端「关闭服务」按钮走的接口）==');

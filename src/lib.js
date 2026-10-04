@@ -161,9 +161,17 @@ function altFromName(original) {
  *  `{% asset_img a.png %}` 则由 Hexo 自己查 PostAsset 表，生成
  *  `/2026/09/30/文章名/a.png`，正确且图片会被复制进 public。
  *  注意 alt 里的空格会让标签参数错位，一律换成连字符。 */
+/** 8.4) 已经知道 alt 文本时直接拼标签。
+ *  导入 Markdown 用的就是这一条：原文的 `![alt](…)` 里 alt 是人写的，
+ *  比"从文件名推出来的"更准，别再倒回文件名去猜。
+ *  alt 里的空格会让标签参数错位，一律换成连字符；花括号/百分号会破坏标签本身，去掉。 */
+function assetTagAlt(fileName, alt) {
+  const safe = String(alt || '').replace(/[{}%<>"'[\]]/g, '').replace(/\s+/g, '-').trim();
+  return `{% asset_img ${fileName} ${safe || 'image'} %}`;
+}
+
 function assetTag(fileName, original) {
-  const alt = altFromName(original).replace(/[{}%<>"']/g, '').replace(/\s+/g, '-');
-  return `{% asset_img ${fileName} ${alt} %}`;
+  return assetTagAlt(fileName, altFromName(original));
 }
 
 /** 9) 文章所在目录：草稿进 _drafts，正式进 _posts（服务端与写入端共用，避免两处硬编码走偏） */
@@ -535,7 +543,7 @@ module.exports = {
   ...storage, validateDate, detectImage, listAssets,
   isBlogRoot, findBlogRoot, sanitizeName, resolveInside,
   parseFrontMatter, buildFrontMatter, formatDate, postDir, rmrf,
-  assetExt, assetName, altFromName, assetTag,
+  assetExt, assetName, altFromName, assetTag, assetTagAlt,
   listPosts, readPost, writePost,
   setDraftFlag, publishPost, readSiteConfig,
   listConfigFiles, readConfig, writeConfig,

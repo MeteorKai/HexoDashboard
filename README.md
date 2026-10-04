@@ -12,6 +12,11 @@
 - **图片管理**：选择文件、粘贴或拖拽插图，使用 Hexo 的 `asset_img` 标签，支持图片归档与恢复。
 - **历史与恢复**：保存前备份历史版本；删除文章时连同图片移入回收站，可恢复。
 - **PDF 导入**：将可提取文字的 PDF 转成 Markdown；文章标题默认取 PDF 文件名（导入后可以改），PDF 内容整篇进正文，不会为了"猜标题"删掉任何一行；不包含 OCR，扫描件需要先识别文字。
+- **Markdown 导入**：一个「导入 MD」入口，在弹窗中选择文档类型，再分别选择 Markdown 文档和图片文件夹：
+  - **普通 Markdown（Typora 等）**：识别 `![说明](图片路径)`、引用式图片、`<img src=…>`；`C:\…\image.png`、`file:///C:/…` 等本机绝对路径图片自动读取，内嵌 base64 图片直接提取，不用再选图片文件夹。相对路径图片需补选图片目录。
+  - **Obsidian 笔记**：识别 `![[图片.png]]`、`![[图片.png|宽度]]`，也兼容普通 Markdown 图片语法；选择文档后，再选择笔记旁的 `assets` 文件夹或包含文档和图片的共同目录。其他笔记不会被导入，补选图片不会替换已选文档。
+
+  只上传文档实际引用的图片，不受目录中无关图片数量影响。优先按相对路径匹配，同名图片无法确定时提示，不随便取第一张。图片复制进**文章同名资源目录**，正文改成 Hexo 原生 `{% asset_img 文件名 说明 %}`；Front-matter 的标题、日期、标签填入主页面表单，导入后请确认并保存。实时预览在首次保存前也能显示导入图片，刷新后恢复未保存编辑时会保留图片目录信息。外链原样保留；缺图保持引用并点名提示；代码块和行内代码中的图片示例不改写。博客需开启 `post_asset_folder: true` 才能复制图片。
 - **生成与部署**：执行 Hexo 的生成、清理、预览、部署命令，在页面查看实时任务日志并中止任务。
 - **网页设置与配置编辑**：首次启动即可在网页设置博客目录；原文编辑博客 YAML 配置，校验语法、检查版本冲突并自动备份。
 - **无窗口启动**：Windows 支持 VBS 隐藏启动；在网页关闭服务后，后台与隐藏启动器一起退出。
@@ -126,7 +131,7 @@ PORT=4322 node src/server.js
 
 ```text
 hexo-tool/
-├── src/                 # HTTP API、Hexo 任务、文件与历史管理、PDF 转换
+├── src/                 # HTTP API、Hexo 任务、文件与历史管理、PDF 与 Markdown 导入
 ├── web/                 # 写作台、独立编辑页、预览页与样式
 ├── vendor/              # 随源码提供的第三方库及许可证
 ├── tests/               # 单元测试、接口与界面回归测试
@@ -149,7 +154,7 @@ hexo-tool/
 在项目根目录运行以下命令，无需安装额外测试依赖：
 
 ```bash
-node --test tests/lib.test.js tests/pdfmd.test.js tests/launchers.test.js tests/settings.test.js
+node --test tests/lib.test.js tests/pdfmd.test.js tests/mdimport.test.js tests/launchers.test.js tests/settings.test.js
 node tests/static-check.js
 node tests/buffer-check.js
 node tests/contrast-audit.js
@@ -162,6 +167,7 @@ node tests/e2e.js
 
 - Windows 设置页回归：PowerShell 中执行 `$env:HEXO_UI_TEST='1'; node --test tests/settings.test.js; Remove-Item Env:HEXO_UI_TEST`。需要默认路径安装的 Chrome/Edge；覆盖首次设置博客、编辑 YAML、错误校验和冲突提示。
 - `node tests/ui-style.test.js`：使用 Chrome/Edge 的无头模式做页面回归；当前浏览器查找逻辑针对 Windows 默认安装路径。
+- `node tests/ui-import-md.js`：真浏览器验收「导入 MD」的两种模式、补选图片保留原文档、只上传被引用图片、图片落盘与浏览器加载、普通相对路径 / base64 / 本机绝对路径、保存后的资源目录及独立编辑页导入；仅操作新建的临时博客。
 - `node tests/hexo-run.js "/path/to/your/hexo-blog"`：借用已有博客的 Hexo 依赖与主题，在临时目录验证真实生成和预览。
 - `tests/ui-blog-setup.js`、`tests/shot-pdf.js`：用于准备临时界面测试博客和验证 PDF 导入；仅对专用测试实例运行界面验收脚本。
 - `node tools/make-icon.js`：重新生成应用图标，预览图输出到 `.workbuddy/`。

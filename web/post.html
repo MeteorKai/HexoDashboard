@@ -50,6 +50,7 @@
   <div class="article-writing">
   <div class="pptools">
     <button class="ghost sm" id="btnPdf" title="选一个 PDF，把转出来的 Markdown 插到光标处（不用手动复制粘贴）">导入 PDF</button>
+    <button class="ghost sm" id="btnMd" title="导入普通 Markdown 或 Obsidian 笔记，内容插到光标处，图片复制进本文资源目录">导入 MD</button>
     <button class="ghost sm" id="btnUpload" title="选择图片，也可以直接 Ctrl+V 粘贴或拖拽进来">插入图片</button>
     <span class="note">Ctrl+S 保存 · Tab 缩进 · 图片可粘贴或拖入</span>
     <button class="ghost sm" id="btnKeys" title="Markdown 快捷键速查（Ctrl /）">⌨ 快捷键</button>
@@ -76,6 +77,24 @@
     <h2 id="ppFailTitle">打不开这篇文章</h2>
     <p id="ppFailMsg"></p>
     <a class="ppback" href="/">← 回到写作台</a>
+  </div>
+</div>
+
+<div class="modal" id="mdImportModal" role="dialog" aria-modal="true" aria-labelledby="mdImportTitle">
+  <div class="box">
+    <header><h2 id="mdImportTitle">导入 Markdown</h2></header>
+    <div class="body md-import-fields">
+      <label for="mdImportMode">文档类型</label>
+      <select id="mdImportMode"><option value="markdown">普通 Markdown（Typora 等）</option><option value="obsidian">Obsidian 笔记</option></select>
+      <p class="note" id="mdImportHint"></p>
+      <label for="mdImportFile">Markdown 文档</label>
+      <input id="mdImportFile" type="file" accept=".md,.markdown,.mdown,.mkd">
+      <label for="mdImportImages">图片文件夹（本机绝对路径 / 内嵌图片无需选择）</label>
+      <input id="mdImportImages" type="file" webkitdirectory multiple>
+      <p class="note">Obsidian 通常选择笔记旁的 assets 文件夹；相对路径图片可选择包含文档和图片的共同目录。只导入所选文档，其他笔记不会被导入。外链保留原地址。</p>
+      <p class="note warn" id="mdImportError" role="status" hidden></p>
+    </div>
+    <div class="foot"><button id="btnCancelMdImport">取消</button><button id="btnConfirmMdImport" class="primary">导入</button></div>
   </div>
 </div>
 

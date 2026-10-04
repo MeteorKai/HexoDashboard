@@ -60,7 +60,7 @@ const keysSrc = fs.readFileSync(path.join(WEB, 'mdkeys.js'), 'utf8');
 const STATIC = new Map([...srv.matchAll(/\['(\/[^']*)','([^']+)'\]/g)].map((m) => [m[1], m[2]]));
 
 log('== 1. 语法编译 ==');
-for (const f of ['web/theme.js', 'web/editor.js', 'web/app.js', 'web/post.js', 'src/pdfmd.js', 'src/pdfimport.js']) {
+for (const f of ['web/theme.js', 'web/editor.js', 'web/app.js', 'web/post.js', 'src/pdfmd.js', 'src/pdfimport.js', 'src/mdimport.js']) {
   try { new vm.Script(fs.readFileSync(path.join(ROOT, f), 'utf8'), { filename: f }); log('  PASS  ' + f + ' 语法正确'); }
   catch (e) { fail++; log('  FAIL  ' + f + ' → ' + e.message); }
 }
@@ -299,6 +299,170 @@ ok(/btnPdf.*disabled|disabled.*btnPdf/.test(shotPdfSrc) && /stillBusy/.test(shot
   '验收的完成判据是"按钮从解析中复位"，不是"正文出现某段文字"（后者会被残留内容骗到）');
 
 log('');
+log('== 11b. Markdown 导入 ==');
+/* 和 PDF 导入同一条链，多出来的麻烦是**图片**：
+ *   · 浏览器只给字节，不给"这个文件旁边的目录" → 图片必须和 md 一起选进来，
+ *     否则 md 里那串相对路径没人兑现，生成出来是一条死链，而且死得很安静；
+ *   · 图片可能在子目录（Typora 的 xxx.assets）→ Windows 的文件框只能在一个目录里
+ *     多选，所以另有"选整个文件夹"的口子，靠 webkitRelativePath 把相对路径带过来；
+ *   · 代码块里的 `![示例](a.png)` 是**示例代码**，一个字都不能动。 */
+const mdimpSrc = fs.readFileSync(path.join(SRC, 'mdimport.js'), 'utf8');
+try { new vm.Script(mdimpSrc, { filename: 'src/mdimport.js' }); ok(true, 'src/mdimport.js 语法正确'); }
+catch (e) { ok(false, 'src/mdimport.js 语法正确', e.message); }
+
+ok(/p==='\/api\/import-md' && req\.method==='POST'/.test(srv), 'server.js 只注册 POST /api/import-md');
+ok(/MD_MAX/.test(srv) && /readRawBody\(req,MD_MAX/.test(srv), '导入接口有自己的体积上限（图片是跟 md 一起上来的）');
+ok(/multipart\/form-data/.test(srv) && /boundary=/.test(srv), '服务端按 multipart 的 boundary 切分（md 与图片同一个请求）');
+ok(/mdimport\.parseMultipart/.test(srv) && /function parseMultipart/.test(mdimpSrc),
+  'multipart 解析放在 mdimport.js（可单测；server.js 只管路由）');
+ok(/mdimport\.parseMultipart/.test(srv), 'server.js 调 mdimport.parseMultipart');
+ok(/form\.append\('md',/.test(ed) && /form\.append\('mdrel'/.test(ed),
+  'editor.js 把 md 原文与它的相对路径一起发过去（相对路径是解析子目录图片的基准）');
+ok(/'f:' \+ relOf\(f\)/.test(ed), '图片以"相对路径"为字段名上传（同名不同目录的图不会互相顶掉）');
+ok(/webkitRelativePath/.test(ed) && /webkitdirectory/.test(ed), '目录模式保留相对路径（图片在子目录时对得上号）');
+
+/* 「只选了 md、没选图片」是最容易踩的一个坑：服务端没有字节可复制，引用只能原样留着，
+   而页面上照样显示"导入成功" —— 用户事后才发现一整篇裂图。所以必须在**替换编辑区之前**处理。 */
+ok(/function countLocalImageRefs/.test(ed) && /built\.refs > 0 && built\.images === 0/.test(ed),
+  'md 里有本地图片引用却一张图都没选时，导入前就处理（不是事后才在提示里提一句）');
+ok(/new Blob\(\[mdText\]/.test(ed), 'md 只读一遍：判断引用数与真正上传用的是同一份文本');
+
+/* 文件框一次只能在一个目录里多选 → 图片在 assets/ 里时「导入 MD」够不着。
+   光提醒"请重新选择"没用（用户还会再点一次同一个按钮），必须**直接把文件夹选择框开出来**。
+   实测踩到的坑：先弹确认框再开选择框的话，确认框把 showDirectoryPicker 要的"用户激活"
+   耗过期了 —— 用户点「确定」后调用被浏览器拒绝，而拒绝又被吞成"用户取消"，
+   看起来就是"点了确定什么都没发生"（用户截图抓到的就是这一幕）。所以现在不问、直接开。 */
+ok(/const st = await openImportPicker\(\{ directory: true \}\)/.test(ed) && /if \(st === 'picked'\) return;/.test(ed)
+  && /if \(st === 'fail'\)/.test(ed),
+  '只选了 md 时不弹确认框、直接开文件夹选择框（文件刚选完、激活还热着，一次就成）');
+ok(/\? 'cancel' : 'fail'/.test(ed),
+  '开不出来时必须如实报 fail（吞成"用户取消"就会变成"点了确定没反应"）');
+ok(/pickFile\('', \(fs2\) => \{ importMarkdown\(fs2, \{ noAutoDir: true \}\); \}, \{ directory: true \}\)/.test(ed),
+  '降级路径用 input 那条路兜底（showDirectoryPicker 刚被拒过，再调还是被拒）');
+ok(/!\(extra && extra\.noAutoDir\)/.test(ed) && /noAutoDir: true/.test(ed),
+  '自动补开有防循环护栏（选目录进来的导入不再二次弹框，缺图交给提示点名）');
+ok(/window\.showDirectoryPicker/.test(ed) && /collectDirFiles/.test(ed),
+  '选目录优先用 showDirectoryPicker（能拿到真实路径，顺带判断"这是不是一个博客目录"）');
+ok(/function looksLikeBlog/.test(ed) && /onOpenBlogSettings/.test(ed) && /blogDir: \(\) =>/.test(app),
+  '选中的目录像博客时问一句要不要切过去，但**只填设置不自动保存**');
+ok(/openSettings\(\{ blog: dir \}\)/.test(app), 'app.js 把路径填进设置弹窗（保存仍由用户点）');
+/* 一个文件夹里躺着好几篇笔记是常态，随手捡第一篇 = "导错了比没导成更难发现" */
+ok(/list\.filter\(\(f\) => MD_EXT_RE/.test(ed) && /candidates\.length > 1/.test(ed) && /opts\.chooseMd/.test(ed),
+  '文件夹里有多个 md 时让用户挑一篇（不替他猜）');
+ok(/chooseMd: \(message, items\) => chooseFromList\(message, items\)/.test(app) && /function chooseFromList/.test(app),
+  'app.js 有"选一个文件"的对话框（原生 confirm 表达不了"我要第 3 篇"）');
+ok(/chooseMd: \(message, items\)/.test(pjs), 'post.js 也注入了 chooseMd（这一页只有 confirm 可退）');
+ok(/openImportPicker\(\{ multiple: true/.test(ed) || /openImportPicker\(opts/.test(ed),
+  '两个入口都改走 openImportPicker（按钮与"自动补开"是同一条路）');
+
+/* Obsidian 的 ![[图片]]：不认这种写法的话整篇图都换不掉，而且连 missing 都不报（静默失败） */
+ok(/const RE_WIKI/.test(mdimpSrc) && /s\.replace\(RE_WIKI/.test(mdimpSrc), 'mdimport 认 Obsidian 的 ![[图片]] 写法');
+ok(mdimpSrc.indexOf('s.replace(RE_WIKI') < mdimpSrc.indexOf('s.replace(RE_REF') &&
+  mdimpSrc.indexOf('s.replace(RE_WIKI') < mdimpSrc.indexOf('s.replace(RE_COLLAPSED'),
+  '![[…]] 必须排在 ![id] / ![alt][id] 之前匹配（否则会被咬成半个，永远换不掉）');
+/* 这条用 includes 而不是正则：要匹配的是源码里的字符类 `[^\]\[]*`，
+   写成正则要转义一串反斜杠，写错一点就是"永远为真"的假断言。 */
+ok(mdimpSrc.includes('([^\\]\\[]*)'),
+  '折叠式规则的 id 里不许出现 [（同样是给 Obsidian 的 ![[…]] 让路）');
+
+/* 普通 md（Windows 里复制粘贴出来的）的两种图片来源。
+   Obsidian 的 ![[…]] 是"第三种"，但它们必须共用同一个按钮 —— 用户不该被要求
+   先判断"我这份 md 是哪一款"，那份判断本来就该由程序替他做。 */
+ok(/function dataBytes/.test(mdimpSrc) && /const MIME_EXT/.test(mdimpSrc),
+  'mdimport 认内嵌的 data:image/...;base64 图（Windows 粘贴最常见的落地形态）');
+ok(/stats\.embedded\+\+/.test(mdimpSrc), '内嵌图单独计数（前端要能说清"这几张是从 md 里抽的"）');
+/* 顺序断言：base64 里出现 %2B 会被 decodeURIComponent 改掉，[?#] 那条还会截掉尾巴 ——
+   先解码再判断 = 解出一张坏图。 */
+ok(mdimpSrc.indexOf('const data = dataBytes(target)') < mdimpSrc.indexOf('const decoded = decodeTarget(target)'),
+  'data URI 必须在 decodeTarget **之前**判断（一经 URI 解码就解不出原图了）');
+ok(mdimpSrc.includes("if (!/^image\\//.test(mime)) return null"),
+  'data:text/plain 之类不是图片的 data URI 原样留着（不去动它）');
+ok(mdimpSrc.includes('if (/^data:/i.test(String(target || \'\').trim())) return null'),
+  '是 data URI 但解不出来 → 自包含，不算"缺图"（别人的 md 里没有要找的文件）');
+ok(mdimpSrc.includes('if (!/^[A-Za-z0-9+/=\\s]+$/.test(payload)) return null'),
+  'base64 段不合法就不硬解（硬解出来是一张坏图，不如原样留着）');
+ok(/function isLocalPath/.test(mdimpSrc) && /stats\.localPath\+\+/.test(mdimpSrc),
+  'mdimport 认 md 里写的本机绝对路径（Typora 粘贴的默认形态），并单独计数');
+/* `file:///C:/x.png` 剥掉协议后是 `/C:/x.png`，正则里那个 `\/?` 少了就全线认不出来 */
+ok(mdimpSrc.includes('/^(?:file:\\/\\/\\/?)?\\/?[A-Za-z]:[\\\\/]/i'),
+  '本机路径的正则要容忍剥协议后多出来的那个前导斜杠（否则这种图会被误报成缺图）');
+/* `file:///C:/a.png` 剥协议后是 `/C:/a.png`，Windows 上 fs.existsSync 实测 false
+   （被当成"当前盘符根目录下的 C:\a.png"）→ 这种最常见的写法会整片变缺图。 */
+ok(/function toAbsPath/.test(mdimpSrc) && mdimpSrc.includes("s.replace(/^\\/(?=[A-Za-z]:[\\\\/])/, '')"),
+  '盘符前面那个多余的前导斜杠要抹掉（只在盘符前抹，POSIX 的 /Users/… 不受影响）');
+ok(/const abs = toAbsPath\(decoded\)/.test(mdimpSrc) && /return \{ local: abs, key: normalize\(abs\) \}/.test(mdimpSrc),
+  '交给读取方的是抹干净之后的路径（mdimport 不碰 fs，只能保证交出去的是干净的）');
+ok(/if \(hit\.local\)/.test(mdimpSrc) && /await readLocal\(hit\.local\)/.test(mdimpSrc),
+  '本机路径的图在落盘阶段才读（读文件是异步的，扫正文那一步只能同步）');
+ok(/missingSet\.add\(baseOf\(hit\.local\)\)/.test(mdimpSrc),
+  '本机路径读不到（换机器了）就如实算缺图，不假装成功');
+ok(/const readLocal=async \(abs\)=>\{/.test(srv) && /if\(!path\.isAbsolute\(abs\)\)return null/.test(srv),
+  '服务端只读**绝对**路径（相对路径是"随 md 上传"那条路，不能混）');
+ok(/if\(!lib\.assetExt\(abs,''\)\)return null/.test(srv) && /if\(st\.size>IMG_MAX\)return null/.test(srv),
+  '按本机路径读文件时也要卡后缀白名单与体积上限（不能把整块磁盘吸进博客）');
+ok(/const IMG_MAX/.test(srv) && /readLocal,mode:mdMode/.test(srv), 'server.js 把 readLocal 与导入模式注入给 convert');
+/* 前端"要不要提醒你另选图片"的判断：这三种都自带字节 / 本来就不需要文件 */
+/* 用 includes 而不是正则：要匹配的就是 editor.js 里的那两条字面正则，
+   写成正则要转义一串反斜杠，写错一点就是"永远为真"的假断言。 */
+ok(/function needsNoFile/.test(ed) && ed.includes('|| /^data:/i.test(s)')
+  && ed.includes('/^(?:file:\\/\\/\\/?)?[A-Za-z]:[\\\\/]/i')
+  && ed.includes('REMOTE_RE.test(s)'),
+  '前端用 needsNoFile 把"内嵌 base64 / 本机路径 / 外链"三种都排除在提醒之外');
+/* 断言方式说明：要匹配的是 editor.js 里的正则字面量，写成正则要转义一串反斜杠，
+   写错一点就是"永远为真"的假断言；所以这类一律用 includes 比对原文。 */
+ok(/function needsNoFile/.test(ed) && ed.includes('|| /^data:/i.test(s)')
+  && ed.includes('/^(?:file:\\/\\/\\/?)?[A-Za-z]:[\\\\/]/i')
+  && ed.includes('REMOTE_RE.test(s)'),
+  '前端用 needsNoFile 把"内嵌 base64 / 本机路径 / 外链"三种都排除在提醒之外');
+ok(ed.includes('const add = (t) => {') && ed.includes('if (!needsNoFile(t)) n++;'),
+  '四种引用写法共用一个 needsNoFile 过滤（各写各的迟早漏一种）');
+/* 实测踩到的坑：老写法只认 `![](…)` 与 `![[…]]`，用 `![alt][id]` 写图的 md 会被
+   数成 0 处 → **只选 md 时一句话都不说**，服务端照旧报缺图，用户事前毫不知情。
+   这正是本轮要消灭的那类静默失败，必须钉住。 */
+ok(ed.includes('const defs = new Map()') && ed.includes('defs.set(id, m[2])'),
+  '前端数引用要先建"引用式定义表"（`![alt][id]` 的地址写在 `[id]: …` 那一行）');
+ok(ed.includes('!\\[[^\\]]*\\]\\[') && ed.includes('defs.get('),
+  '引用式 ![alt][id] 与折叠式 ![id] 也要数进去（数不出来 = 静默裂图）');
+ok(ed.indexOf('!\\[[^\\]]*\\]\\[') >= 0 && ed.includes('defs.has(id)'),
+  '同一 id 有多条定义时取第一条（和 marked 的行为一致）');
+ok(/取消 = 只导入文字/.test(ed) && /装着 md 的那一层/.test(ed),
+  '提示要说清"该选哪一层"与"取消的后果"（用户不该猜；内嵌/本机路径那种自包含的 md 根本不会走到这条提示）');
+ok(/s\.embedded \?/.test(ed) && /s\.localPath \?/.test(ed), '导入结果里区分"内嵌"与"本机路径"两种来源');
+
+/* 只有一个「导入 MD」按钮：以前还有个"导入 MD 目录"，可用户看一眼自己的 md
+   也判断不出该点哪个，选错就是导入失败。现在按内容自动分流，目录模式在需要时自动补开。 */
+ok(/id="btnMd"/.test(html) && /id="btnMd"/.test(phtml), '两个编辑页都有「导入 MD」按钮');
+ok(!/btnMdDir/.test(html) && !/btnMdDir/.test(phtml) && !/btnMdDir/.test(app),
+  '「导入 MD 目录」按钮已合并掉（只有一个入口，避免用户猜该点哪个）');
+ok(/\$\('btnMd'\)/.test(ed) && /opts\.importMd/.test(ed), 'editor.js 负责 按钮 → opts.importMd 这条线');
+ok(/\$\('btnMd'\)/.test(ed) && !/\$\('btnMdDir'\)/.test(ed), 'editor.js 里不再引用已删掉的 btnMdDir');
+ok(/importMd: async/.test(app) && /\/api\/import-md/.test(app), 'app.js 注入 importMd 并调用 /api/import-md');
+ok(/importMd: async/.test(pjs) && /\/api\/import-md/.test(pjs), 'post.js 注入 importMd 并调用 /api/import-md');
+ok([html, phtml].every(s => /id="mdImportMode"/.test(s) && /value="markdown"/.test(s) && /value="obsidian"/.test(s)),
+  '两个编辑页的同一导入弹窗都提供普通 Markdown 与 Obsidian 模式');
+ok(/mdBtn\.addEventListener\('click', showMdImport\)/.test(ed) && /function submitMdImport/.test(ed),
+  '导入按钮打开弹窗，确认后才提交');
+ok(/buildImportForm\(\[md, \.\.\.list\], \{ md, mode \}\)/.test(ed) && /form\.append\('mdmode'/.test(ed),
+  '补选图片目录保留原先选定的文档，并将模式传给服务端');
+ok(/referenced\.has\(f\.name\.toLowerCase\(\)\)/.test(ed), '目录中未被文档引用的图片不上传');
+
+/* 图片落点：与手动上传、PDF 导入同一套规则，任何一处另起炉灶就是"保存后图片失联"。 */
+ok(/lib\.assetName\(img\.data/.test(srv), '资源名沿用内容哈希（和手动上传同一套，不另起一套）');
+ok(/lib\.assetTagAlt\(/.test(srv) && /asset_img/.test(mdimpSrc), '正文里写 Hexo 原生 {% asset_img %}（不是 ![](相对路径)）');
+ok(/img\.alt/.test(srv) && /alt: String\(alt \|\| ''\)/.test(mdimpSrc),
+  '标签里的 alt 用原文写的那个（`![alt](…)` / `<img alt>`），不是一律变文件名');
+ok(/importAssetDir\(qPost,qTitle,assetDraft\)/.test(srv),
+  'Markdown 导入复用 PDF 那套"目录名按保存规则算"的 helper（不一致的话一保存图片就全部失联）');
+
+/* 三类"不该动"的情况，都要如实让用户知道 */
+ok(/function fenceMap/.test(mdimpSrc) && /flags\[i\] \? line : rewrite\(line\)/.test(mdimpSrc),
+  '按围栏跳过代码块（代码示例里的 ![](…) 不能被换成真图）');
+ok(/missingSet\.add/.test(mdimpSrc) && /missing:r\.missing\|\|\[\]/.test(srv),
+  '没带来字节的图片如实报回前端（不静默留一条死链）');
+ok(/stats\.remote\+\+/.test(mdimpSrc), '外链原样保留（不复制、也不算缺图）');
+ok(/stats\.skipped\+\+/.test(mdimpSrc), '没开 post_asset_folder 时算 skipped，不谎报成"缺图"');
+
+log('');
 log('== 12. 按需实时预览标签页 ==');
 const previewHtml = fs.readFileSync(path.join(WEB, 'preview.html'), 'utf8');
 const previewJs = fs.readFileSync(path.join(WEB, 'preview.js'), 'utf8');
@@ -445,9 +609,9 @@ log('');
 log('== 13. 便携包目录布局 ==');
 /* 这一组防的是"重构把某处引用留在老位置"——静态检查里少见的、只有真跑才会炸的类目。
    每条都对着一个具体的失败后果，不是为了凑数。 */
-const srvFiles = ['server.js', 'lib.js', 'storage.js', 'frontmatter.js', 'pdfimport.js', 'pdfmd.js'];
+const srvFiles = ['server.js', 'lib.js', 'storage.js', 'frontmatter.js', 'pdfimport.js', 'pdfmd.js', 'mdimport.js'];
 const webFiles = ['index.html', 'app.js', 'post.html', 'post.js', 'preview.html', 'preview.js', 'editor.js', 'theme.js', 'styles.css'];
-ok(srvFiles.every((f) => fs.existsSync(path.join(SRC, f))), 'src/ 下 6 个服务端文件齐', srvFiles.filter((f) => !fs.existsSync(path.join(SRC, f))).join(','));
+ok(srvFiles.every((f) => fs.existsSync(path.join(SRC, f))), 'src/ 下 7 个服务端文件齐', srvFiles.filter((f) => !fs.existsSync(path.join(SRC, f))).join(','));
 ok(webFiles.every((f) => fs.existsSync(path.join(WEB, f))), 'web/ 下 9 个前端文件齐', webFiles.filter((f) => !fs.existsSync(path.join(WEB, f))).join(','));
 ok(fs.existsSync(path.join(ROOT, 'vendor', 'pdfjs', 'pdf.js')), 'vendor/ 留在应用根（不属于 src/ 也不属于 web/）');
 const rootJunk = fs.readdirSync(ROOT).filter((f) => /^\.(server|hexo-serve|hexo-tool)-/.test(f));

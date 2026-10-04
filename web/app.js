@@ -20,6 +20,7 @@
     posts: [], postsAll: 0,
     current: null,            // 当前打开的文章名（null = 新建）
     originalName: '', savedName: '', draft: false,
+    importedAssets: null,     // 首次保存前，导入图片实际所在的目录与草稿位
     revision: '', frontMatter: '', snapshot: {},
     dirty: false, view: 'all', search: '',
     jobId: null, es: null, serving: false,
@@ -117,7 +118,7 @@
     state.info = i;
     state.token = i.token || '';
     const ready = !!i.blog;
-    for (const id of ['btnNew', 'btnSave', 'btnPublish', 'btnUpload', 'btnPdf', 'btnPreview', 'btnAssets', 'btnHistory', 'btnOpenTab', 'btnTags', 'btnServe', 'btnTrash', 'search', 'selAll']) $(id).disabled = !ready;
+    for (const id of ['btnNew', 'btnSave', 'btnPublish', 'btnUpload', 'btnPdf', 'btnMd', 'btnPreview', 'btnAssets', 'btnHistory', 'btnOpenTab', 'btnTags', 'btnServe', 'btnTrash', 'search', 'selAll']) $(id).disabled = !ready;
     document.querySelectorAll('.panel--editor input, .panel--editor select, .panel--editor textarea').forEach(el => { el.disabled = !ready; });
     $('blogPath').textContent = i.blog || '未设置博客目录';
     $('blogPath').title = i.blog || '请在设置中选择博客目录';
@@ -244,6 +245,40 @@
     $('selAll').indeterminate = !all && vis.some((p) => selected.has(keyOf(p)));
   }
 
+  /* ── 让用户从一列里挑一个（导入 MD 遇到"文件夹里有好几篇"时用）─────────
+   *  为什么不复用 window.confirm：原生弹窗只有"确定/取消"，
+   *  用户没法表达"我要第 3 篇"，只能取消重来 —— 白绕一圈。
+   *  这里现建一个对话框，关掉就 resolve(null)，不留悬挂的 Promise。 */
+  function chooseFromList(message, items) {
+    return new Promise((resolve) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'modal show';
+      wrap.innerHTML =
+        '<div class="box modal--choice"><header><h2>选择一个文件</h2></header>' +
+        '<div class="body"><div class="note"></div><div class="choices"></div></div>' +
+        '<div class="foot"><button class="sm" data-cancel>取消</button></div></div>';
+      wrap.querySelector('.note').textContent = message;
+      const box = wrap.querySelector('.choices');
+      const done = (v) => { wrap.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
+      for (const [label, value] of items) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'choice';
+        b.textContent = label;
+        b.title = label;                       // 路径很长时要能悬停看全
+        b.addEventListener('click', () => done(value));
+        box.appendChild(b);
+      }
+      wrap.querySelector('[data-cancel]').addEventListener('click', () => done(null));
+      wrap.addEventListener('click', (e) => { if (e.target === wrap) done(null); });
+      const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); done(null); } };
+      document.addEventListener('keydown', onKey);
+      document.body.appendChild(wrap);
+      const first = box.querySelector('button');
+      if (first) first.focus();
+    });
+  }
+
   /* ── 右键菜单 ─────────────────────────────────────────────────────────── */
   function closeCtxMenu() { $('ctxmenu').classList.remove('show'); }
   function openCtxMenu(e, p) {
@@ -311,6 +346,7 @@
         at: Date.now(), fields: collect(), body: $('body').value,
         draft: $('f-draft').checked, name: $('f-name').value.trim(),
         revision: state.revision, frontMatter: state.frontMatter,
+        importedAssets: state.importedAssets,
       }));
     } catch { /* 存储满或隐私模式：忽略，不影响主流程 */ }
   }
@@ -342,6 +378,9 @@
     $('f-draft').checked = !!c.draft;
     $('f-name').value = c.name || $('f-name').value;
     $('body').value = c.body || '';
+    if (state.current === null) {
+      state.importedAssets = c.importedAssets || (c.name ? { name: c.name, draft: !!c.draft } : null);
+    }
     markDirty();
     window.Editor.render();
     updateStats();
@@ -357,6 +396,7 @@
       state.current = d.name;
       state.originalName = d.name;
       state.savedName = d.name;
+      state.importedAssets = null;
       state.draft = !!d.draft;
       state.revision = d.revision;
       state.frontMatter = d.frontMatter;
@@ -394,6 +434,7 @@
     state.current = null;
     state.originalName = '';
     state.savedName = '';
+    state.importedAssets = null;
     state.draft = false;
     state.revision = '';
     state.frontMatter = '';
@@ -491,6 +532,7 @@
     state.current = r.name;
     state.originalName = r.name;
     state.savedName = r.name;
+    state.importedAssets = null;
     state.draft = !!r.draft;
     state.revision = r.revision;
     state.frontMatter = r.frontMatter;
@@ -1235,7 +1277,10 @@
       if (request === configRequest) { configBusy = false; syncConfigControls(); }
     }
   }
-  async function openSettings() {
+  /* 打开设置弹窗。prime 用来先把某个输入框填好（比如刚选过博客目录的文件夹）：
+     用户点了"选择文件夹"，我们得把这个结果放到该放的地方，
+     但保存与否由**他**决定 —— 绝不能替他写配置。 */
+  async function openSettings(prime) {
     const request = ++configRequest;
     $('settingsModal').classList.add('show');
     $('settingsNote').textContent = '正在读取…';
@@ -1253,6 +1298,10 @@
       if (s.blog) await loadConfigFiles();
     } catch (e) {
       $('settingsNote').textContent = '读取失败：' + e.message;
+    }
+    if (prime && prime.blog) {
+      $('s-blog').value = prime.blog;
+      $('settingsNote').textContent = '已把你刚选中的文件夹填进「博客目录」，确认无误后点「保存设置」。';
     }
   }
 
@@ -1512,7 +1561,10 @@
     bindUI();
 
     window.Editor.init({
-      getContext: () => ({ post: state.savedName || state.current || '', draft: state.draft }),
+      getContext: () => ({
+        post: state.savedName || state.current || (state.importedAssets && state.importedAssets.name) || '',
+        draft: state.current === null && state.importedAssets ? !!state.importedAssets.draft : state.draft,
+      }),
       onDirty: markDirty,
       onToast: toast,
       upload: async (blob, filename) => {
@@ -1567,6 +1619,7 @@
         /* f-name 是保存时的**文件名**，也决定资源目录名：用服务端回传的那个，
            保证"图放在哪"和"保存到哪"是同一个目录。 */
         $('f-name').value = (r.assets && r.assets.name) || '';
+        state.importedAssets = r.assets || null;
         $('body').value = r.markdown;
         refreshFieldSummary();
         markDirty();
@@ -1577,6 +1630,59 @@
           : (r.assetFolder === false ? '已存为草稿（博客没开 post_asset_folder，图片不能存进文章目录）'
             : '已存为草稿待你确认');
         return { stats: r.stats, hint };
+      },
+      /* Markdown 导入 = 把一份现成的 .md 变成一篇新文章。
+       * 与 PDF 那条路共用"服务端算目录名 → 写进 f-name"的做法（理由同上）。
+       *
+       * 多出来的两件事：
+       *   ① 图片要**和 md 一起选进来**（服务端才有字节可复制），所以传的是 FormData；
+       *   ② md 里往往自带 front-matter，标题/日期/标签是作者自己写的，可信 ——
+       *      按顺序填进表单，别让用户再抄一遍。 */
+      /* 选完文件夹后，如果那看起来是个博客目录，editor.js 会问一句"要不要切过去"。
+         这里只负责把设置弹窗打开、把路径填好 —— **保存仍然由用户点**，
+         替他改博客目录这种动作不能悄悄做。 */
+      blogDir: () => (state.info && state.info.blog) || '',
+      onOpenBlogSettings: (dir) => { openSettings({ blog: dir }); },
+      /* 文件夹里有好几篇 md 时，让用户挑一篇（而不是替他猜） */
+      chooseMd: (message, items) => chooseFromList(message, items),
+      importMd: async (form, base) => {
+        if (state.dirty || $('body').value.trim()) {
+          if (!confirm('导入会把编辑区换成这份 Markdown 的内容。\n\n当前编辑区里的内容（未保存的部分只在本机缓存里）会被替换掉。继续吗？')) {
+            throw new Error('已取消导入');
+          }
+        }
+        const r = await api('/api/import-md?title=' + encodeURIComponent(base) + '&draft=1', {
+          method: 'POST',
+          body: form,          // FormData：不设 Content-Type，浏览器要自己补 boundary
+        });
+        newPost(false);
+        $('f-title').value = (r.title || '').trim() || base;
+        $('f-draft').checked = true;
+        $('f-name').value = (r.assets && r.assets.name) || '';
+        state.importedAssets = r.assets || null;
+        const meta = r.meta || {};
+        if (meta.tags) $('f-tags').value = Array.isArray(meta.tags) ? meta.tags.join(', ') : String(meta.tags);
+        if (meta.categories) {
+          const c = Array.isArray(meta.categories) ? meta.categories[0] : meta.categories;
+          if (c) window.Editor.setCategory(String(c));
+        }
+        /* 日期只认 `YYYY-MM-DD` 开头的写法：YAML 里还可能解析出别的类型，
+           写进日期框再保存会被服务端按"日期无效"打回来，宁可不填。 */
+        if (meta.date && /^\d{4}-\d{2}-\d{2}/.test(String(meta.date))) {
+          $('f-date').value = String(meta.date).replace('T', ' ').slice(0, 19);
+        }
+        $('body').value = r.markdown;
+        refreshFieldSummary();
+        markDirty();
+        window.Editor.render();
+        updateStats();
+        const n = (r.assets && r.assets.count) || 0;
+        const miss = (r.missing && r.missing.length) || 0;
+        const hint = n ? `已导入为待保存草稿，${n} 张图已复制进同名资源目录`
+          : (miss ? '部分图片未找到（引用保持原样），请在「导入 MD」中补选正确的图片文件夹'
+            : (r.assetFolder === false ? '待保存草稿（博客没开 post_asset_folder，图片不能存进文章目录）'
+              : '待保存草稿，请确认后保存'));
+        return { stats: r.stats, hint, missingFiles: r.missing || [] };
       },
     });
     window.Editor.render();

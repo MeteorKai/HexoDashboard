@@ -93,6 +93,7 @@
     <div class="article-writing">
     <div class="steps">
       <button id="btnPdf" class="ghost sm" title="选一个 PDF，直接转成 Markdown 开成一篇新文章（不用手动复制粘贴）">导入 PDF</button>
+      <button id="btnMd" class="ghost sm" title="导入普通 Markdown 或 Obsidian 笔记，图片复制进文章同名资源目录">导入 MD</button>
       <button id="btnUpload" class="ghost icon sm" aria-label="插入图片" title="插入图片：选择图片，也可以直接 Ctrl+V 粘贴或拖拽进来"><svg class="ui-icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/></svg></button>
       <button id="btnPublish" class="ghost sm" hidden>发表文章</button>
       <button id="btnHistory" class="ghost icon sm" aria-label="历史版本" title="历史版本：查看这篇文章的历次保存版本"><svg class="ui-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 11a9 9 0 1 1 2 7M3 4v7h7m2-4v5l3 2"/></svg></button>
@@ -135,6 +136,24 @@
     </div>
     <div id="log" class="scroll log"></div>
   </section>
+</div>
+
+<div class="modal" id="mdImportModal" role="dialog" aria-modal="true" aria-labelledby="mdImportTitle">
+  <div class="box">
+    <header><h2 id="mdImportTitle">导入 Markdown</h2></header>
+    <div class="body md-import-fields">
+      <label for="mdImportMode">文档类型</label>
+      <select id="mdImportMode"><option value="markdown">普通 Markdown（Typora 等）</option><option value="obsidian">Obsidian 笔记</option></select>
+      <p class="note" id="mdImportHint"></p>
+      <label for="mdImportFile">Markdown 文档</label>
+      <input id="mdImportFile" type="file" accept=".md,.markdown,.mdown,.mkd">
+      <label for="mdImportImages">图片文件夹（本机绝对路径 / 内嵌图片无需选择）</label>
+      <input id="mdImportImages" type="file" webkitdirectory multiple>
+      <p class="note">Obsidian 通常选择笔记旁的 assets 文件夹；相对路径图片可选择包含文档和图片的共同目录。只导入所选文档，其他笔记不会被导入。外链保留原地址。</p>
+      <p class="note warn" id="mdImportError" role="status" hidden></p>
+    </div>
+    <div class="foot"><button id="btnCancelMdImport">取消</button><button id="btnConfirmMdImport" class="primary">导入</button></div>
+  </div>
 </div>
 
 <!-- ④ 快捷键速查 -->
