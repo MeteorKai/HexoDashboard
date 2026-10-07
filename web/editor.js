@@ -133,6 +133,16 @@ window.Editor = (function () {
 
   /* ── 相对图片路径 → /media/p|d/<文章>/<图> ───────────────────────────── */
   function fixPreviewImages(el, ctx) {
+    if (ctx.page) {
+      el.querySelectorAll('img').forEach(img => {
+        const src = img.getAttribute('src') || '';
+        if (!src || src.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(src)) return;
+        img.removeAttribute('srcset');
+        img.src = '/api/page-image?name=' + encodeURIComponent(ctx.page) + '&image=' + encodeURIComponent(src);
+        img.loading = 'lazy';
+      });
+      return;
+    }
     if (!ctx.post) return;
     const prefix = '/media/' + (ctx.draft ? 'd' : 'p') + '/' + encodeURIComponent(ctx.post) + '/';
     el.querySelectorAll('img').forEach((img) => {

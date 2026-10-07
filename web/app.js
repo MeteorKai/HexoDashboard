@@ -1219,15 +1219,149 @@
   }
 
   /* ── 独立页面与主题数据 ────────────────────────────────────────────────── */
-  let page = null, pageBusy = false, pageRequest = 0;
+  let page = null, pageBusy = false, pageRequest = 0, pageMode = 'source', pageLinks = null;
   const pageDirty = () => !!page && $('pageContent').value !== page.content;
   const discardPage = () => !pageDirty() || confirm('页面文件有未保存的修改，确定放弃吗？');
+  const pageURL = value => /^(?:https?:\/\/[^\s]+|\/(?!\/)[^\s]*)$/i.test(value);
+  function pageImageURL(value) {
+    return /^https?:\/\//i.test(value) ? value : '/api/page-image?name=' + encodeURIComponent(page.name) + '&image=' + encodeURIComponent(value);
+  }
+  function readPageLinks(content) {
+    const data = window.jsyaml.load(content, { schema: window.jsyaml.CORE_SCHEMA });
+    JSON.stringify(data); // 循环别名无法安全用于表单。
+    const object = value => value && typeof value === 'object' && !Array.isArray(value);
+    if (!Array.isArray(data) || !data.every(group => object(group) && typeof group.links_category === 'string' &&
+      Array.isArray(group.list) && group.list.every(friend => object(friend) &&
+        ['name', 'link', 'avatar', 'description'].every(key => friend[key] === undefined || typeof friend[key] === 'string')))) return null;
+    return data;
+  }
+  function pageLinksError() {
+    for (const group of pageLinks || []) {
+      if (!group.links_category.trim()) return '请填写友链分类名称';
+      for (const friend of group.list) {
+        if (!friend.name?.trim()) return '请填写友链名称';
+        if (!/^https?:\/\/[^\s]+$/i.test(friend.link || '') || !URL.canParse(friend.link)) return '友链网址必须是有效的 http:// 或 https:// 地址';
+        if (friend.avatar && (!pageURL(friend.avatar) || !URL.canParse(friend.avatar, location.origin))) return '头像请使用 http(s) 地址或 /images/… 站内路径';
+      }
+    }
+    return '';
+  }
+  function renderPagePreview() {
+    const preview = $('pagePreview');
+    preview.replaceChildren();
+    $('pagePreviewTitle').textContent = '内容预览';
+    $('pageViewNote').textContent = '';
+    if (!page) return;
+    const content = $('pageContent').value;
+    try {
+      if (page.kind === 'page') {
+        const text = content.replace(/^\uFEFF/, '');
+        const match = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text);
+        if (/^---[ \t]*\r?\n/.test(text) && !match) throw new Error('Front-matter 缺少结束的 ---');
+        const meta = match ? window.jsyaml.load(match[1], { schema: window.jsyaml.CORE_SCHEMA }) || {} : {};
+        if (typeof meta !== 'object' || Array.isArray(meta)) throw new Error('Front-matter 必须是 YAML 对象');
+        $('pagePreviewTitle').textContent = String(meta.title || page.name);
+        $('pageViewNote').textContent = window.Editor.renderPreview(match ? text.slice(match[0].length) : text, preview, { page: page.name });
+        if (/^(?:link|links)\//i.test(page.name) && !preview.textContent.trim()) preview.textContent = '此文件是友链页面入口。请切换到 _data/links.yml 编辑和预览友链名单。';
+        preview.querySelectorAll('a').forEach(link => { link.target = '_blank'; link.rel = 'noopener noreferrer'; });
+      } else {
+        const links = readPageLinks(content);
+        if (!links) { $('pageViewNote').textContent = '此 YAML 不是 links_category / list 友链结构，请使用源码编辑。'; return; }
+        $('pagePreviewTitle').textContent = '友链预览';
+        $('pageViewNote').textContent = pageMode === 'form'
+          ? '表单修改会重排 YAML，保留自定义字段；注释与锚点请用源码编辑。保存时自动备份原文件。' + (pageLinksError() ? ' ⚠ ' + pageLinksError() : '')
+          : '源码编辑保留原文；可切换到友链表单编辑分类、名称、网址、头像和简介。';
+        for (const group of links) {
+          const title = document.createElement('h3'); title.textContent = group.links_category; preview.appendChild(title);
+          for (const friend of group.list) {
+            const card = document.createElement('div'); card.className = 'page-friend-card';
+            if (friend.avatar && pageURL(friend.avatar)) {
+              const img = document.createElement('img'); img.src = pageImageURL(friend.avatar); img.alt = ''; img.loading = 'lazy'; card.appendChild(img);
+            }
+            const info = document.createElement('div'), link = document.createElement('a'), description = document.createElement('p');
+            link.textContent = friend.name || '未命名友链';
+            if (/^https?:\/\//i.test(friend.link || '') && URL.canParse(friend.link)) { link.href = friend.link; link.target = '_blank'; link.rel = 'noopener noreferrer'; }
+            description.textContent = friend.description || ''; info.append(link, description); card.appendChild(info); preview.appendChild(card);
+          }
+          if (!group.list.length) { const empty = document.createElement('p'); empty.textContent = '暂无友链，点击「添加友链」开始。'; preview.appendChild(empty); }
+        }
+      }
+    } catch (e) { $('pageViewNote').textContent = '预览暂不可用：' + e.message; }
+  }
+  function writePageLinks(rebuild) {
+    const eol = page.content.includes('\r\n') ? '\r\n' : '\n';
+    $('pageContent').value = (page.content.startsWith('\uFEFF') ? '\uFEFF' : '') +
+      window.jsyaml.dump(pageLinks, { schema: window.jsyaml.CORE_SCHEMA, noRefs: true, lineWidth: -1 }).replace(/\n/g, eol);
+    if (rebuild) renderPageForm();
+    renderPagePreview();
+    syncPageControls();
+  }
+  function renderPageForm() {
+    const form = $('pageForm'); form.replaceChildren();
+    if (!pageLinks) return;
+    function button(parent, text, action, fn, disabled = false) {
+      const el = document.createElement('button'); el.type = 'button'; el.className = 'sm'; el.textContent = text; el.dataset.action = action;
+      el.dataset.fixedDisabled = String(disabled); el.disabled = disabled;
+      el.addEventListener('click', fn); parent.appendChild(el);
+    }
+    function field(parent, label, object, key) {
+      const wrapper = document.createElement('label'), input = document.createElement('input');
+      wrapper.textContent = label; input.value = object[key] || ''; input.dataset.field = key;
+      input.addEventListener('input', () => { object[key] = input.value; writePageLinks(false); });
+      wrapper.appendChild(input); parent.appendChild(wrapper);
+    }
+    pageLinks.forEach((group, groupIndex) => {
+      const box = document.createElement('fieldset'), legend = document.createElement('legend');
+      box.className = 'page-link-group'; legend.textContent = '分类 ' + (groupIndex + 1); box.appendChild(legend);
+      field(box, '分类名称', group, 'links_category');
+      button(box, '删除分类', 'remove-group', () => {
+        if (!confirm('删除这个分类及其全部友链？保存后才会写入文件。')) return;
+        pageLinks.splice(groupIndex, 1); writePageLinks(true);
+      });
+      group.list.forEach((friend, index) => {
+        const row = document.createElement('div'); row.className = 'page-link-fields';
+        for (const [label, key] of [['名称', 'name'], ['网址（必填）', 'link'], ['头像地址（选填）', 'avatar'], ['简介（选填）', 'description']]) field(row, label, friend, key);
+        const actions = document.createElement('div'); actions.className = 'config-toolbar';
+        for (const [text, delta] of [['上移', -1], ['下移', 1]]) button(actions, text, delta < 0 ? 'up' : 'down', () => {
+          [group.list[index], group.list[index + delta]] = [group.list[index + delta], group.list[index]]; writePageLinks(true);
+        }, index + delta < 0 || index + delta >= group.list.length);
+        button(actions, '删除友链', 'remove-friend', () => {
+          if (!confirm('删除这条友链？保存后才会写入文件。')) return;
+          group.list.splice(index, 1); writePageLinks(true);
+        });
+        row.appendChild(actions); box.appendChild(row);
+      });
+      button(box, '添加友链', 'add-friend', () => { group.list.push({ name: '新朋友', link: '', avatar: '', description: '' }); writePageLinks(true); });
+      form.appendChild(box);
+    });
+    button(form, '添加分类', 'add-group', () => { pageLinks.push({ links_category: '新分类', list: [] }); writePageLinks(true); });
+  }
+  function refreshPageView() {
+    pageLinks = null;
+    if (page?.kind === 'data') {
+      try { pageLinks = readPageLinks($('pageContent').value); } catch { /* 原文和服务端校验仍然可用。 */ }
+    }
+    if (!pageLinks) pageMode = 'source';
+    $('btnPageForm').hidden = !pageLinks;
+    $('pageContent').hidden = pageMode === 'form';
+    $('pageForm').hidden = pageMode !== 'form';
+    $('btnPageSource').setAttribute('aria-pressed', String(pageMode === 'source'));
+    $('btnPageForm').setAttribute('aria-pressed', String(pageMode === 'form'));
+    renderPageForm();
+    renderPagePreview();
+    syncPageControls();
+  }
   function syncPageControls() {
     $('pageFile').disabled = pageBusy || !$('pageFile').options.length;
     $('pageContent').disabled = pageBusy || !page;
     $('btnReloadPage').disabled = pageBusy || !$('pageFile').value;
     $('btnSavePage').disabled = pageBusy || !pageDirty();
     $('btnClosePages').disabled = pageBusy;
+    $('btnPageSource').disabled = pageBusy || !page;
+    $('btnPageForm').disabled = pageBusy || !page;
+    $('pageForm').querySelectorAll('input, button').forEach(el => { el.disabled = pageBusy || el.dataset.fixedDisabled === 'true'; });
+    $('pageState').textContent = pageBusy ? '处理中…' : !page ? '' : pageDirty() ? '未保存' : '已保存';
+    $('pageState').className = 'badge ' + (pageDirty() ? 'warn' : 'ok');
   }
   function closePages() {
     if (pageBusy || !discardPage()) return;
@@ -1240,6 +1374,7 @@
     pageBusy = true;
     page = null;
     $('pageContent').value = '';
+    refreshPageView();
     $('pageNote').textContent = '正在读取页面文件…';
     syncPageControls();
     try {
@@ -1247,6 +1382,8 @@
       if (request !== pageRequest) return;
       $('pageContent').value = r.content;
       page = { ...r, content: $('pageContent').value };
+      pageMode = 'form';
+      refreshPageView();
       $('pageNote').textContent = '当前文件：source/' + r.name + '。保存前校验 YAML，并备份原文件。';
     } catch (e) {
       if (request === pageRequest) $('pageNote').textContent = '读取失败：' + e.message;
@@ -1261,13 +1398,18 @@
     page = null;
     $('pageFile').replaceChildren();
     $('pageContent').value = '';
+    refreshPageView();
     $('pageNote').textContent = '正在读取独立页面与数据文件…';
     $('pagesModal').classList.add('show');
     syncPageControls();
     try {
       const r = await api('/api/pages');
       if (request !== pageRequest) return;
-      for (const file of r.files) $('pageFile').add(new Option((file.kind === 'data' ? '数据：' : '页面：') + file.name, file.name));
+      for (const file of r.files) {
+        const label = /^about\//i.test(file.name) ? '关于页：' : /^(?:link|links)\//i.test(file.name) ? '友链页面入口：'
+          : /^_data\/links\.ya?ml$/i.test(file.name) ? '友链名单：' : file.kind === 'data' ? '数据：' : '页面：';
+        $('pageFile').add(new Option(label + file.name, file.name));
+      }
       if (r.files.length) await loadPage(r.files[0].name);
       else $('pageNote').textContent = '没有找到独立页面或 YAML 数据文件。可编辑的文件位于 source 下，不包含 _posts、_drafts 和隐藏目录。';
     } catch (e) {
@@ -1278,6 +1420,7 @@
   }
   async function savePage() {
     if (pageBusy || !pageDirty()) return;
+    if (pageMode === 'form' && pageLinksError()) { $('pageViewNote').textContent = pageLinksError(); return; }
     const request = ++pageRequest;
     pageBusy = true;
     syncPageControls();
@@ -1286,6 +1429,7 @@
       if (request !== pageRequest) return;
       $('pageContent').value = r.content;
       page = { ...r, content: $('pageContent').value };
+      refreshPageView();
       $('pageNote').textContent = '已保存 source/' + r.name + '。原文件备份：' + r.backup + '。请编译站点使修改生效。';
     } catch (e) {
       if (request === pageRequest) $('pageNote').textContent = '保存失败：' + e.message;
@@ -1448,7 +1592,9 @@
     $('btnCloseSettings').addEventListener('click', closeSettings);
     $('btnPages').addEventListener('click', openPages);
     $('btnClosePages').addEventListener('click', closePages);
-    $('pageContent').addEventListener('input', syncPageControls);
+    $('pageContent').addEventListener('input', () => { pageMode = 'source'; refreshPageView(); });
+    $('btnPageSource').addEventListener('click', () => { pageMode = 'source'; refreshPageView(); });
+    $('btnPageForm').addEventListener('click', () => { pageMode = 'form'; refreshPageView(); });
     $('pageFile').addEventListener('change', () => {
       if (!discardPage()) { $('pageFile').value = page.name; return; }
       loadPage($('pageFile').value);

@@ -18,7 +18,7 @@ async function fixture(t, savedBlog) {
     for(const file of fs.readdirSync(path.join(APP,dir)))fs.copyFileSync(path.join(APP,dir,file),path.join(app,dir,file));
   }
   fs.mkdirSync(path.join(app,'vendor'));
-  fs.copyFileSync(path.join(APP,'vendor','js-yaml.js'),path.join(app,'vendor','js-yaml.js'));
+  for(const file of ['js-yaml.js','marked.min.js','purify.min.js'])fs.copyFileSync(path.join(APP,'vendor',file),path.join(app,'vendor',file));
   fs.mkdirSync(path.join(blog,'source','_posts'),{recursive:true});
   fs.writeFileSync(path.join(blog,'_config.yml'),'# original\ntitle: test\npost_asset_folder: true\n');
   fs.writeFileSync(path.join(blog,'config.yaml'),'extra: true\n');
@@ -66,7 +66,6 @@ test('pasting images in both article editors stores native asset tags in the mat
   const f=await fixture(t,'valid');
   const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9XcAAAAASUVORK5CYII=','base64');
   const imageName=require('crypto').createHash('md5').update(png).digest('hex')+'.png';
-  for(const file of ['marked.min.js','purify.min.js'])fs.copyFileSync(path.join(APP,'vendor',file),path.join(f.app,'vendor',file));
   for(const [name,dir] of [['Main article','_posts'],['Independent draft','_drafts']]) {
     fs.mkdirSync(path.join(f.blog,'source',dir),{recursive:true});
     fs.writeFileSync(path.join(f.blog,'source',dir,name+'.md'),`---\ntitle: ${name}\ndate: 2026-10-07 12:00:00\n---\nbefore\nafter\n`);
@@ -246,6 +245,79 @@ test('web pages UI edits Markdown and friend YAML without overwriting the articl
     await wait('!document.getElementById("pagesModal").classList.contains("show")');
     assert.ok(br.dialogs.some(dialog=>dialog.message.includes('页面文件有未保存')));
     assert.equal(fs.readFileSync(path.join(f.blog,'source','_data','links.yml'),'utf8'),external);
+  } finally {await br.close();}
+});
+
+test('About previews and friend forms round-trip custom data safely', {skip:process.platform!=='win32'||process.env.HEXO_UI_TEST!=='1'}, async t=>{
+  const f=await fixture(t,'valid');seedPages(f);
+  const yaml=require('../vendor/js-yaml');
+  const groups=[{links_category:'Friends',has_thumbnail:false,custom:{keep:'group'},list:[
+    {name:'Example',link:'https://example.test/',avatar:'/images/avatar.png',description:'Hello',extra:{keep:'friend'}},
+    {name:'Second',link:'https://second.test/'}
+  ]}];
+  const raw='\uFEFF# keep in source mode\r\n'+yaml.dump(groups).replace(/\n/g,'\r\n');
+  const friendsFile=path.join(f.blog,'source','_data','links.yml');fs.writeFileSync(friendsFile,raw);
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9XcAAAAASUVORK5CYII=','base64');
+  fs.mkdirSync(path.join(f.blog,'source','images'));fs.writeFileSync(path.join(f.blog,'source','images','avatar.png'),png);
+  const probe=net.createServer();await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));const port=probe.address().port;await new Promise(resolve=>probe.close(resolve));
+  const br=await require('./cdp').launch({out:path.join(f.root,'shots'),freshProfile:true,port});
+  const wait=async expr=>assert.ok(await br.waitFor(expr),'UI did not reach: '+expr);
+  const click=async id=>br.evaluate(`document.getElementById(${JSON.stringify(id)}).click()`);
+  const set=async(id,value,event='input')=>br.evaluate(`(()=>{const el=document.getElementById(${JSON.stringify(id)});el.value=${JSON.stringify(value)};el.dispatchEvent(new Event(${JSON.stringify(event)},{bubbles:true}));})()`);
+  const field=async(key,index,value)=>br.evaluate(`(()=>{const el=document.querySelectorAll('#pageForm [data-field=${key}]')[${index}];el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  const action=async(name,index=0)=>br.evaluate(`document.querySelectorAll('#pageForm [data-action=${name}]')[${index}].click()`);
+  try {
+    await br.goto(f.base+'/');await wait('!document.getElementById("btnPages").disabled');await click('btnPages');
+    await wait('document.getElementById("pagePreview").textContent.includes("Original about")');
+    const about='---\ntitle: About preview\nlayout: page\ncustom: keep\n---\n# Hello\n**Live preview**\n![Local](../images/avatar.png)\n![Root](/images/avatar.png)\n<img src=x onerror="window.pageXss=true">\n<script>window.pageXss=true</script>\n';
+    await set('pageContent',about);
+    await wait('document.querySelector("#pagePreview strong")?.textContent==="Live preview"');
+    assert.equal(await br.evaluate('document.getElementById("pagePreviewTitle").textContent'),'About preview');
+    assert.equal(await br.evaluate('document.getElementById("pagePreview").textContent.includes("custom: keep")'),false);
+    assert.equal(await br.evaluate('document.querySelector("#pagePreview script, #pagePreview [onerror]")!==null || window.pageXss===true'),false);
+    await wait('[...document.querySelectorAll("#pagePreview img")].filter(img=>img.alt==="Local" || img.alt==="Root").every(img=>img.complete && img.naturalWidth===1)');
+    await click('btnSavePage');await wait('document.getElementById("pageState").textContent==="已保存"');
+    assert.equal(fs.readFileSync(path.join(f.blog,'source','about','index.md'),'utf8'),about);
+    const image=await fetch(f.base+'/api/page-image?name=about%2Findex.md&image=..%2Fimages%2Favatar.png');
+    assert.equal(image.status,200);assert.deepEqual(Buffer.from(await image.arrayBuffer()),png);
+    assert.equal((await fetch(f.base+'/api/page-image?name=about%2Findex.md&image=..%2F..%2F_config.yml')).status,400);
+    await set('pageFile','links/index.md','change');await wait('document.getElementById("pagePreview").textContent.includes("友链页面入口")');
+    await set('pageFile','_data/links.yml','change');await wait('!document.getElementById("pageForm").hidden && document.querySelectorAll("#pagePreview .page-friend-card").length===2');
+    await wait('document.querySelector("#pagePreview img").naturalWidth===1');
+    assert.equal(await br.evaluate('document.getElementById("pageContent").value'),raw.replace(/\r\n/g,'\n'),'Reading a form must not reserialize YAML');
+    await click('btnPageSource');await click('btnPageForm');
+    assert.equal(await br.evaluate('document.getElementById("btnSavePage").disabled'),true,'Mode switches are not edits');
+    assert.equal(fs.readFileSync(friendsFile,'utf8'),raw);
+    await field('name',0,'Changed: # friend');await field('description',0,'<img src=x onerror=alert(1)>');
+    await field('link',0,'javascript:alert(1)');await click('btnSavePage');
+    assert.equal(fs.readFileSync(friendsFile,'utf8'),raw,'An invalid form cannot be saved');
+    assert.equal(await br.evaluate('document.getElementById("pageViewNote").textContent.includes("http://")'),true);
+    assert.equal(await br.evaluate('document.querySelector("#pagePreview a[href^=javascript]")!==null'),false);
+    await field('link',0,'https://changed.test/');await action('down',0);
+    await action('add-group');await field('links_category',1,'New category');await action('add-friend',1);
+    await field('name',2,'Third');await field('link',2,'https://third.test/');
+    await action('add-friend',1);await action('remove-friend',3);
+    await action('add-group');await action('remove-group',2);
+    await br.evaluate("window.originalConfirm=window.confirm;window.confirm=()=>false;document.getElementById('btnClosePages').click();window.confirm=window.originalConfirm;");
+    assert.equal(await br.evaluate('document.getElementById("pagesModal").classList.contains("show")'),true,'Form edits get unsaved protection');
+    await br.evaluate("document.querySelector('#pageForm input').dispatchEvent(new KeyboardEvent('keydown',{key:'s',ctrlKey:true,bubbles:true,cancelable:true}))");
+    await wait('document.getElementById("pageState").textContent==="已保存"');
+    const saved=fs.readFileSync(friendsFile,'utf8'),data=yaml.load(saved);
+    assert.equal(saved[0],'\uFEFF');assert.ok(saved.includes('\r\n'));assert.equal(data[0].has_thumbnail,false);
+    assert.deepEqual(data[0].custom,{keep:'group'});assert.deepEqual(data[0].list[1].extra,{keep:'friend'});
+    assert.deepEqual(data[0].list.map(friend=>friend.name),['Second','Changed: # friend']);
+    assert.equal(data[0].list[1].description,'<img src=x onerror=alert(1)>');
+    assert.equal(data[1].links_category,'New category');assert.equal(data[1].list.length,1);
+    const backupDir=path.join(f.blog,'.hexo-tool-history','pages','_data');
+    assert.ok(fs.readdirSync(backupDir).some(file=>fs.readFileSync(path.join(backupDir,file),'utf8')===raw));
+    await click('btnPageSource');assert.ok((await br.evaluate('document.getElementById("pageContent").value')).includes('Third'));
+    await set('pageContent','friends:\n  - name: Different theme\n');
+    assert.equal(await br.evaluate('document.getElementById("btnPageForm").hidden'),true,'Unsupported schemas stay in source mode');
+    await click('btnSavePage');await wait('document.getElementById("pageState").textContent==="已保存"');
+    assert.deepEqual(yaml.load(fs.readFileSync(friendsFile,'utf8')),{friends:[{name:'Different theme'}]});
+    await br.send('Emulation.setDeviceMetricsOverride',{width:600,height:900,deviceScaleFactor:1,mobile:false});
+    assert.equal(await br.evaluate('getComputedStyle(document.querySelector(".page-workspace")).gridTemplateColumns.split(" ").length'),1,'Narrow screens use stacked panes');
+    assert.deepEqual(fs.readdirSync(path.join(f.blog,'source','_posts')),[]);
   } finally {await br.close();}
 });
 

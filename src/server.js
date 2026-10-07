@@ -755,6 +755,10 @@ const server = http.createServer(async (req,res)=>{
       return sendJSON(res,200,{ok:true,title,markdown:r.markdown,meta:r.meta||{},stats:r.stats,
         missing:r.missing||[],assets:target.name?{name:target.name,count:written.size,draft:assetDraft}:null,assetFolder});
     }
+    if(p==='/api/page-image' && req.method==='GET') {
+      const file=pages.pageImage(BLOG,url.searchParams.get('name'),url.searchParams.get('image'));
+      res.setHeader('Content-Security-Policy',"default-src 'none'; sandbox");return sendFile(res,file);
+    }
     if(p.startsWith('/media/') && req.method==='GET') {
       const seg=p.slice(7).split('/');const mode=seg.shift();
       if(!['p','d'].includes(mode)||seg.length<2)throw Object.assign(new Error('图片路径无效'),{status:404});

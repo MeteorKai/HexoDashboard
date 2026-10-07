@@ -221,7 +221,7 @@
 </div>
 
 <div class="modal" id="pagesModal" role="dialog" aria-modal="true" aria-labelledby="pagesTitle">
-  <div class="box" style="width:min(900px,94vw)">
+  <div class="box" style="width:min(1120px,94vw)">
     <header><h2 id="pagesTitle">页面管理</h2><div class="spacer"></div><button id="btnClosePages" class="sm">关闭</button></header>
     <div class="body config-editor">
       <div class="config-toolbar">
@@ -229,9 +229,24 @@
         <select id="pageFile" aria-label="选择独立页面或数据文件"></select>
         <button id="btnReloadPage" class="sm">重新读取</button>
       </div>
-      <p class="note">编辑 source 下的 Markdown 页面（包括标题、layout 等 Front-matter）。友链列表通常在 _data/links.yml 中；该 YAML 数据也可在此编辑。保存后请编译站点，主题数据修改后可能需要重启本地预览。</p>
+      <p class="note">About 可边写边预览；友链名单请选择 _data/links.yml，links/index.md 通常只是页面入口。这里的预览不包含主题模板，保存后请编译站点，主题数据修改后可能需要重启本地预览。</p>
       <div class="note" id="pageNote" role="status"></div>
-      <textarea id="pageContent" aria-label="页面源文件内容" spellcheck="false" wrap="off"></textarea>
+      <div class="config-toolbar">
+        <button id="btnPageSource" class="sm" aria-pressed="true">源码编辑</button>
+        <button id="btnPageForm" class="sm" aria-pressed="false" hidden>友链表单</button>
+        <span id="pageState" class="badge" role="status"></span>
+      </div>
+      <p class="note" id="pageViewNote" role="status"></p>
+      <div class="page-workspace">
+        <div class="page-edit-pane">
+          <textarea id="pageContent" aria-label="页面源文件内容" spellcheck="false" wrap="off"></textarea>
+          <div id="pageForm" hidden></div>
+        </div>
+        <section class="page-preview-pane" aria-label="页面内容预览">
+          <h3 id="pagePreviewTitle">内容预览</h3>
+          <div id="pagePreview" class="preview"></div>
+        </section>
+      </div>
     </div>
     <div class="foot"><button id="btnSavePage" class="primary">保存页面文件 <kbd>Ctrl S</kbd></button></div>
   </div>
@@ -275,8 +290,11 @@
 <div class="ctxmenu" id="ctxmenu"></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<!-- 依赖顺序：快捷键表 → 编辑器模块 → 应用外壳。Markdown 渲染库仅在预览标签页加载。
+<!-- 依赖顺序：预览与 YAML 库 → 快捷键表 → 编辑器模块 → 应用外壳。
      全部外链，因为 CSP 只允许 script-src 'self'。 -->
+<script src="/marked.js"></script>
+<script src="/purify.js"></script>
+<script src="/yaml.js"></script>
 <script src="/mdkeys.js"></script>
 <script src="/editor.js"></script>
 <script src="/app.js"></script>

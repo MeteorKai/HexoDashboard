@@ -63,4 +63,14 @@ function writePage(blog,name,content,revision) {
   lib.atomicWrite(pagePath(blog,name),content);
   return {name,kind:current.kind,content,revision:lib.revision(content),backup};
 }
-module.exports={listPages,readPage,writePage};
+function pageImage(blog,name,image) {
+  pagePath(blog,name);
+  if(typeof image!=='string' || /[\\:\x00-\x1f]/.test(image))throw bad('非法页面图片路径');
+  let target;
+  try {target=decodeURIComponent(image.split(/[?#]/)[0]);}catch{throw bad('非法页面图片路径');}
+  if(/[\\:\x00-\x1f]/.test(target))throw bad('非法页面图片路径');
+  target=path.posix.normalize(target.startsWith('/') ? target.slice(1) : path.posix.join(path.posix.dirname(name),target));
+  if(target.split('/').some(part=>part.startsWith('.') || part.startsWith('_')) || !lib.assetExt(target,''))throw bad('只能预览 source 下公开目录中的图片');
+  return lib.resolveInside(path.join(blog,'source'),target,'');
+}
+module.exports={listPages,readPage,writePage,pageImage};

@@ -86,3 +86,20 @@ test('does not list or follow linked source directories',t=>{
   assert.throws(()=>pages.writePage(blog,'linked/index.md','overwrite','revision'),{status:400});
   assert.equal(fs.readFileSync(path.join(outside,'index.md'),'utf8'),'Outside source');
 });
+
+test('page previews resolve only public source images and reject traversal and symlinks',t=>{
+  const {blog,seed}=fixture(t);
+  const local=seed('about/assets/local image.png','local'),shared=seed('images/avatar.png','shared');
+  assert.equal(pages.pageImage(blog,'about/index.md','assets/local%20image.png'),local);
+  assert.equal(pages.pageImage(blog,'about/index.md','../images/avatar.png?version=1#anchor'),shared);
+  assert.equal(pages.pageImage(blog,'_data/links.yml','/images/avatar.png'),shared);
+  for(const image of ['../../outside.png','%2e%2e/%2e%2e/outside.png','/_posts/secret.png','/_drafts/secret.png',
+    '/_data/secret.png','/.hidden/secret.png','../_config.yml','C:/secret.png','assets/a.png%3astream','%zz.png','assets\\a.png']) {
+    assert.throws(()=>pages.pageImage(blog,'about/index.md',image),{status:400},image);
+  }
+  assert.throws(()=>pages.pageImage(blog,'_posts/article.md','/images/avatar.png'),{status:400});
+  const outside=path.join(blog,'outside-images');fs.mkdirSync(outside);fs.writeFileSync(path.join(outside,'image.png'),'outside');
+  try{fs.symlinkSync(outside,path.join(blog,'source','linked-images'),process.platform==='win32'?'junction':'dir');}
+  catch(e){if(e.code==='EPERM')return t.skip('Cannot create a symlink');throw e;}
+  assert.throws(()=>pages.pageImage(blog,'about/index.md','/linked-images/image.png'),{status:400});
+});

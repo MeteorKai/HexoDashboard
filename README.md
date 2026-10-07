@@ -120,9 +120,13 @@ PORT=4322 node src/server.js
 
 点击顶栏「页面管理」，选择源文件并编辑原文：
 
-- `about/index.md`：关于页正文及标题、`layout` 等 Front-matter。
+- `about/index.md`：关于页正文及标题、`layout` 等 Front-matter；右侧实时预览正文，支持页面相对路径与 `/images/…` 站内图片。
 - `links/index.md` 或 `link/index.md`：友链页面本身；如果主题从数据文件生成友链，请选择 `_data/links.yml` 等对应 YAML 文件修改名单。
 - 其他已存在的 Markdown 页面，例如分类、标签、搜索页，也会列出；支持子目录及 `.markdown` 后缀。
+
+`_data/links.yml` 使用 `links_category` / `list` 结构时，会提供友链表单和卡片预览：可添加、删除分类与友链，编辑名称、网址、头像、简介，并调整友链顺序。网址须为 http(s)，头像支持 http(s) 或 `/images/…`。表单修改会重新排版 YAML，保留自定义字段，但不保留注释和锚点；需要保持原文时请选择「源码编辑」。其他主题的数据结构仍使用源码编辑，不会自动转换。
+
+预览只是内容预览，不包含主题样式或执行主题模板；切换编辑模式本身不会修改文件。
 
 点击「保存页面文件」或按 Ctrl+S。保存后点击「编译站点」使修改生效；主题数据修改后可能需要重启本地预览。这里只编辑已存在的文件，不会改动主题模板，也不会把页面写进文章目录。
 
@@ -178,7 +182,7 @@ node tests/e2e.js
 
 可选测试：
 
-- Windows 设置页回归：PowerShell 中执行 `$env:HEXO_UI_TEST='1'; node --test tests/settings.test.js; Remove-Item Env:HEXO_UI_TEST`。需要默认路径安装的 Chrome/Edge；覆盖首次设置博客、编辑 YAML、错误校验和冲突提示。
+- Windows 界面回归：PowerShell 中执行 `$env:HEXO_UI_TEST='1'; node --test tests/settings.test.js; Remove-Item Env:HEXO_UI_TEST`。需要默认路径安装的 Chrome/Edge；覆盖首次设置博客、图片粘贴、About 实时预览、友链表单与自定义字段保留、YAML 校验和冲突提示。
 - `node tests/ui-style.test.js`：使用 Chrome/Edge 的无头模式做页面回归；当前浏览器查找逻辑针对 Windows 默认安装路径。
 - `node tests/ui-import-md.js`：真浏览器验收「导入 MD」的两种模式、补选图片保留原文档、只上传被引用图片、图片落盘与浏览器加载、普通相对路径 / base64 / 本机绝对路径、保存后的资源目录及独立编辑页导入；仅操作新建的临时博客。
 - `node tests/hexo-run.js "/path/to/your/hexo-blog"`：借用已有博客的 Hexo 依赖与主题，在临时目录验证真实生成和预览。
