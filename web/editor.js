@@ -580,13 +580,18 @@ window.Editor = (function () {
   /* ── 上传：按钮 / 粘贴 / 拖拽 ────────────────────────────────────────── */
   async function uploadBlob(blob, filename) {
     if (!opts.upload) return;
+    if (!blob) { opts.onToast('剪贴板没有可读取的图片，请重新复制图片后粘贴', 'err'); return; }
+    const ta = $('body'), context = opts.getContext();
+    const start = ta.selectionStart, end = ta.selectionEnd;
     try {
       const r = await opts.upload(blob, filename);
-      const ta = $('body');
-      const pos = ta.selectionStart != null ? ta.selectionStart : ta.value.length;
-      ta.value = ta.value.slice(0, pos) + '\n' + r.markdown + '\n' + ta.value.slice(pos);
-      ta.focus();
-      ta.selectionStart = ta.selectionEnd = pos + r.markdown.length + 2;
+      const current = opts.getContext();
+      if (context.post && (context.post !== current.post || context.draft !== current.draft)) {
+        opts.onToast('图片已保存到原文章目录；你已切换文章，未插入当前正文', 'warn');
+        return;
+      }
+      const text = '\n' + r.markdown + '\n', pos = start + text.length;
+      writeBack(ta, ta.value.slice(0, start) + text + ta.value.slice(end), pos, pos);
       render();
       opts.onDirty();
       opts.onToast(r.reused ? '这张图内容相同，已直接复用：' + r.name : '图片已保存：' + r.name, 'ok');
@@ -895,12 +900,30 @@ window.Editor = (function () {
       });
     }
 
-    body.addEventListener('paste', (e) => {
-      const item = [...((e.clipboardData && e.clipboardData.items) || [])].find((i) => i.type.startsWith('image/'));
-      if (!item) return;                       // 纯文本粘贴走默认行为
+    body.addEventListener('paste', async (e) => {
+      const data = e.clipboardData;
+      if (!data) return;
+      const isImage = file => file && (/^image\//i.test(file.type) || /\.(png|jpe?g|gif|webp|bmp|avif|tiff?|ico)$/i.test(file.name));
+      let files = [...(data.files || [])].filter(isImage);
+      if (!files.length) {
+        files = [...(data.items || [])].filter(item => item.kind === 'file')
+          .map(item => item.getAsFile()).filter(isImage);
+      }
+      // 富文本复制有时只提供 HTML 内嵌图片，没有 FileList。
+      if (!files.length && data.getData) {
+        const html = document.createElement('template');
+        html.innerHTML = data.getData('text/html');
+        for (const img of html.content.querySelectorAll('img[src]')) {
+          const match = /^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(img.getAttribute('src'));
+          if (!match) continue;
+          try {
+            files.push(new File([Uint8Array.from(atob(match[2]), c => c.charCodeAt(0))], 'clipboard.png', { type: match[1] }));
+          } catch { /* 非法 data URL 留给默认文本粘贴，不插入坏标签 */ }
+        }
+      }
+      if (!files.length) return;               // 纯文本粘贴走默认行为
       e.preventDefault();
-      const ext = (item.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
-      uploadBlob(item.getAsFile(), 'paste-' + Date.now() + '.' + ext);
+      for (const file of files) await uploadBlob(file, file.name || 'clipboard.png');
     });
 
     let dragDepth = 0;

@@ -62,6 +62,73 @@ async function fixture(t, savedBlog) {
   return {root,app,blog,base,port,info,settingsFile,request};
 }
 
+test('pasting images in both article editors stores native asset tags in the matching folder', {skip:process.platform!=='win32'||process.env.HEXO_UI_TEST!=='1'}, async t=>{
+  const f=await fixture(t,'valid');
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9XcAAAAASUVORK5CYII=','base64');
+  const imageName=require('crypto').createHash('md5').update(png).digest('hex')+'.png';
+  for(const file of ['marked.min.js','purify.min.js'])fs.copyFileSync(path.join(APP,'vendor',file),path.join(f.app,'vendor',file));
+  for(const [name,dir] of [['Main article','_posts'],['Independent draft','_drafts']]) {
+    fs.mkdirSync(path.join(f.blog,'source',dir),{recursive:true});
+    fs.writeFileSync(path.join(f.blog,'source',dir,name+'.md'),`---\ntitle: ${name}\ndate: 2026-10-07 12:00:00\n---\nbefore\nafter\n`);
+  }
+  const probe=net.createServer();await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));
+  const port=probe.address().port;await new Promise(resolve=>probe.close(resolve));
+  const {launch}=require('./cdp');const br=await launch({out:path.join(f.root,'shots'),freshProfile:true,port});
+  await br.send('Page.addScriptToEvaluateOnNewDocument',{source:`const originalOpen=window.open;window.open=function(...args){const tab=originalOpen.apply(this,args);if(args[0]==='/preview')window.__previewTab=tab;return tab;};`});
+  const wait=async expr=>assert.ok(await br.waitFor(expr),'UI did not reach: '+expr+'; '+await br.evaluate('document.getElementById("toast").textContent'));
+  async function paste(mode,selected=false) {
+    return br.evaluate(`(() => {
+      const ta=document.getElementById('body');ta.value=${JSON.stringify(selected?'before\nselected\nafter':'before\nafter')};ta.focus();ta.setSelectionRange(7,${selected?15:7});
+      const bytes=Uint8Array.from(atob(${JSON.stringify(png.toString('base64'))}),c=>c.charCodeAt(0));
+      const file=new File([bytes],'clipboard.png',{type:${JSON.stringify(mode==='emptyMime'?'':'image/png')}});
+      const dt=new DataTransfer();dt.items.add(file);
+      if(${JSON.stringify(mode)}==='multi')dt.items.add(new File([bytes],'second.png',{type:'image/png'}));
+      let event;
+      if(['items','multi'].includes(${JSON.stringify(mode)}))event=new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true});
+      else if(${JSON.stringify(mode)}==='htmlData') {const html=new DataTransfer();html.setData('text/html','<img src="data:image/png;base64,${png.toString('base64')}">');event=new ClipboardEvent('paste',{clipboardData:html,bubbles:true,cancelable:true});}
+      else {event=new Event('paste',{bubbles:true,cancelable:true});Object.defineProperty(event,'clipboardData',{value:{items:[],files:[file]}});}
+      ta.dispatchEvent(event);return event.defaultPrevented;
+    })()`);
+  }
+  try {
+    for(const [name,dir,route] of [['Main article','_posts','/'],['Independent draft','_drafts','/post?name=Independent%20draft&draft=1']]) {
+      await br.goto(f.base+route);
+      if(route==='/') {
+        await wait('document.getElementById("postlist").children.length===2');
+        await br.evaluate(`[...document.querySelectorAll('#postlist li')].find(li=>li.textContent.includes('Main article')).click()`);
+      }
+      await wait(`document.getElementById('f-name').value===${JSON.stringify(name)} && !document.getElementById('body').disabled`);
+      for(const mode of ['items','filesOnly','emptyMime','htmlData']) {
+        assert.equal(await paste(mode),true,`${name}: ${mode} image paste is intercepted`);
+        await wait('document.getElementById("body").value.includes("{% asset_img")');
+        assert.match(await br.evaluate('document.getElementById("body").value'),new RegExp(imageName.replace('.','\\.')));
+        assert.deepEqual(fs.readFileSync(path.join(f.blog,'source',dir,name,imageName)),png);
+      }
+      assert.equal(await paste('multi'),true);
+      await wait('(document.getElementById("body").value.match(/\\{% asset_img /g)||[]).length===2');
+      await paste('items',true);await wait('document.getElementById("body").value.includes("{% asset_img")');
+      assert.equal(await br.evaluate('document.getElementById("body").value.includes("selected")'),false,'Pasted image replaces the selected text');
+      await br.send('Runtime.evaluate',{expression:"document.getElementById('btnPreview').click()",userGesture:true});
+      await wait(`window.__previewTab && !window.__previewTab.closed && (()=>{const img=window.__previewTab.document.querySelector('#preview img');return img && img.complete && img.naturalWidth>0 && img.getAttribute('src').startsWith(${JSON.stringify('/media/'+(dir==='_drafts'?'d':'p')+'/'+encodeURIComponent(name)+'/')});})()`);
+      await br.evaluate('window.__previewTab.close()');
+      await br.evaluate('document.getElementById("btnSave").click()');
+      const saved=await br.waitFor(`!document.getElementById('btnSave').disabled && ${route==='/'?"!document.getElementById('editorTitle').textContent.endsWith(' •')":"document.getElementById('ppState').textContent==='已保存'"}`);
+      assert.ok(saved);
+      assert.match(fs.readFileSync(path.join(f.blog,'source',dir,name+'.md'),'utf8'),/\{% asset_img /);
+      const response=await fetch(f.base+'/media/'+(dir==='_drafts'?'d':'p')+'/'+encodeURIComponent(name)+'/'+imageName);
+      assert.equal(response.status,200);assert.deepEqual(Buffer.from(await response.arrayBuffer()),png);
+      assert.deepEqual(fs.readdirSync(path.join(f.blog,'source',dir,name)),[imageName],'Pasting the same image reuses its file');
+      assert.equal(await br.evaluate(`(()=>{const dt=new DataTransfer();dt.setData('text/plain','normal text');const event=new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true});document.getElementById('body').dispatchEvent(event);return event.defaultPrevented;})()`),false,'Ordinary text paste is not intercepted');
+    }
+    await br.goto(f.base+'/');await wait('!document.getElementById("btnSave").disabled');
+    await br.evaluate(`document.getElementById('f-title').value='New paste';document.getElementById('f-draft').checked=true;`);
+    await paste('multi');await wait('(document.getElementById("body").value.match(/\\{% asset_img /g)||[]).length===2');
+    assert.deepEqual(fs.readFileSync(path.join(f.blog,'source','_drafts','New paste',imageName)),png);
+    await br.evaluate('document.getElementById("btnSave").click()');await wait('!document.getElementById("editorTitle").textContent.endsWith(" •")');
+    assert.equal((fs.readFileSync(path.join(f.blog,'source','_drafts','New paste.md'),'utf8').match(/\{% asset_img /g)||[]).length,2);
+  } finally {await br.close();}
+});
+
 function seedPages(f) {
   const files={
     'about/index.md':'---\ntitle: About\nlayout: page\n# keep\n---\nOriginal about\n',
